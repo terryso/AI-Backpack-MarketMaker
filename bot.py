@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
+import ccxt
 from requests.exceptions import RequestException, Timeout
 from binance.client import Client
 from dotenv import load_dotenv
@@ -127,6 +128,35 @@ HYPERLIQUID_CAPITAL = _parse_float_env(
 )
 
 START_CAPITAL = HYPERLIQUID_CAPITAL if HYPERLIQUID_LIVE_TRADING else PAPER_START_CAPITAL
+
+_TRADING_BACKEND_RAW = os.getenv("TRADING_BACKEND")
+if _TRADING_BACKEND_RAW:
+    TRADING_BACKEND = _TRADING_BACKEND_RAW.strip().lower() or "paper"
+else:
+    TRADING_BACKEND = "paper"
+if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures"}:
+    EARLY_ENV_WARNINGS.append(
+        f"Unsupported TRADING_BACKEND '{_TRADING_BACKEND_RAW}'; using 'paper'."
+    )
+    TRADING_BACKEND = "paper"
+
+BINANCE_FUTURES_LIVE = _parse_bool_env(
+    os.getenv("BINANCE_FUTURES_LIVE"),
+    default=False,
+)
+BINANCE_FUTURES_MAX_RISK_USD = _parse_float_env(
+    os.getenv("BINANCE_FUTURES_MAX_RISK_USD"),
+    default=100.0,
+)
+BINANCE_FUTURES_MAX_LEVERAGE = _parse_float_env(
+    os.getenv("BINANCE_FUTURES_MAX_LEVERAGE"),
+    default=10.0,
+)
+
+BINANCE_FUTURES_MAX_MARGIN_USD = _parse_float_env(
+    os.getenv("BINANCE_FUTURES_MAX_MARGIN_USD"),
+    default=0.0,
+)
 
 # Trading symbols to monitor
 SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT"]
@@ -289,14 +319,46 @@ def _load_llm_max_tokens() -> int:
     )
 
 
+def _load_llm_api_base_url() -> str:
+    raw = os.getenv("LLM_API_BASE_URL")
+    if raw:
+        value = raw.strip()
+        if value:
+            return value
+    return "https://openrouter.ai/api/v1/chat/completions"
+
+
+def _load_llm_api_key() -> str:
+    raw = os.getenv("LLM_API_KEY")
+    if raw:
+        value = raw.strip()
+        if value:
+            return value
+    return OPENROUTER_API_KEY
+
+
+def _load_llm_api_type() -> str:
+    raw = os.getenv("LLM_API_TYPE")
+    if raw:
+        value = raw.strip().lower()
+        if value:
+            return value
+    if os.getenv("LLM_API_BASE_URL"):
+        return "custom"
+    return "openrouter"
+
+
 def refresh_llm_configuration_from_env() -> None:
     """Reload LLM-related runtime settings from environment variables."""
-    global LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_THINKING_PARAM, TRADING_RULES_PROMPT
+    global LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_THINKING_PARAM, TRADING_RULES_PROMPT, LLM_API_BASE_URL, LLM_API_KEY, LLM_API_TYPE
     LLM_MODEL_NAME = _load_llm_model_name()
     LLM_TEMPERATURE = _load_llm_temperature()
     LLM_MAX_TOKENS = _load_llm_max_tokens()
     LLM_THINKING_PARAM = _parse_thinking_env(os.getenv("TRADEBOT_LLM_THINKING"))
     TRADING_RULES_PROMPT = _load_system_prompt()
+    LLM_API_BASE_URL = _load_llm_api_base_url()
+    LLM_API_KEY = _load_llm_api_key()
+    LLM_API_TYPE = _load_llm_api_type()
 
 
 def log_system_prompt_info(prefix: str = "System prompt in use") -> None:
@@ -309,6 +371,9 @@ LLM_MODEL_NAME = _load_llm_model_name()
 LLM_TEMPERATURE = _load_llm_temperature()
 LLM_MAX_TOKENS = _load_llm_max_tokens()
 LLM_THINKING_PARAM = _parse_thinking_env(os.getenv("TRADEBOT_LLM_THINKING"))
+LLM_API_BASE_URL = _load_llm_api_base_url()
+LLM_API_KEY = _load_llm_api_key()
+LLM_API_TYPE = _load_llm_api_type()
 
 # Indicator settings
 EMA_LEN = 20
@@ -354,19 +419,18 @@ RISK_FREE_RATE = _resolve_risk_free_rate()
 if not dotenv_loaded:
     logging.warning(f"No .env file found at {DOTENV_PATH}; falling back to system environment variables.")
 
-if OPENROUTER_API_KEY:
+if LLM_API_KEY:
     masked_key = (
-        OPENROUTER_API_KEY
-        if len(OPENROUTER_API_KEY) <= 12
-        else f"{OPENROUTER_API_KEY[:6]}...{OPENROUTER_API_KEY[-4:]}"
+        LLM_API_KEY
+        if len(LLM_API_KEY) <= 12
+        else f"{LLM_API_KEY[:6]}...{LLM_API_KEY[-4:]}"
     )
     logging.info(
-        "OpenRouter API key detected: %s (length %d)",
-        masked_key,
-        len(OPENROUTER_API_KEY),
+        "LLM API key configured (length %d).",
+        len(LLM_API_KEY),
     )
 else:
-    logging.error("OPENROUTER_API_KEY not found; please check your .env file.")
+    logging.error("No LLM API key configured; expected LLM_API_KEY or OPENROUTER_API_KEY in environment.")
 
 client: Optional[Client] = None
 
@@ -379,6 +443,41 @@ try:
 except Exception as exc:
     logging.critical("Hyperliquid live trading initialization failed: %s", exc)
     raise SystemExit(1) from exc
+
+binance_futures_exchange: Optional[Any] = None
+
+def get_binance_futures_exchange() -> Optional[Any]:
+    global binance_futures_exchange
+    if TRADING_BACKEND != "binance_futures" or not BINANCE_FUTURES_LIVE:
+        return None
+    if binance_futures_exchange is not None:
+        return binance_futures_exchange
+
+    api_key = os.getenv("BINANCE_API_KEY") or API_KEY
+    api_secret = os.getenv("BINANCE_API_SECRET") or API_SECRET
+    if not api_key or not api_secret:
+        logging.error(
+            "BINANCE_API_KEY and/or BINANCE_API_SECRET missing; unable to initialize Binance futures client.",
+        )
+        return None
+
+    try:
+        exchange = ccxt.binanceusdm(
+            {
+                "apiKey": api_key,
+                "secret": api_secret,
+                "enableRateLimit": True,
+            }
+        )
+        exchange.load_markets()
+        binance_futures_exchange = exchange
+        logging.info(
+            "Binance futures client initialized successfully for USDT-margined contracts.",
+        )
+    except Exception as exc:
+        logging.error("Failed to initialize Binance futures client: %s", exc)
+        binance_futures_exchange = None
+    return binance_futures_exchange
 
 def get_binance_client() -> Optional[Client]:
     """Return a connected Binance client or None if initialization failed."""
@@ -553,6 +652,29 @@ def log_portfolio_state() -> None:
             f"{net_unrealized:.2f}",
             btc_price_str,
         ])
+
+
+def sleep_with_countdown(total_seconds: int) -> None:
+    """Sleep with a simple terminal countdown on a single line.
+
+    Uses print + carriage return instead of logging to avoid spamming log files.
+    """
+    try:
+        remaining = int(total_seconds)
+        if remaining <= 0:
+            return
+        while remaining > 0:
+            print(
+                f"\rWaiting for next check in {remaining} seconds... ",
+                end="",
+                flush=True,
+            )
+            time.sleep(1)
+            remaining -= 1
+        print("\rWaiting for next check in 0 seconds...           ")
+    except KeyboardInterrupt:
+        print()
+        raise
 
 def log_trade(coin: str, action: str, details: Dict[str, Any]) -> None:
     """Log trade execution."""
@@ -1498,6 +1620,10 @@ def _recover_partial_decisions(json_str: str) -> Optional[Tuple[Dict[str, Any], 
 
 def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
     """Call OpenRouter API with DeepSeek Chat V3.1."""
+    api_key = LLM_API_KEY
+    if not api_key:
+        logging.error("No LLM API key configured; expected LLM_API_KEY or OPENROUTER_API_KEY in environment.")
+        return None
     try:
         request_metadata: Dict[str, Any] = {
             "model": LLM_MODEL_NAME,
@@ -1525,34 +1651,38 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
             "messages": [
                 {
                     "role": "system",
-                    "content": TRADING_RULES_PROMPT
+                    "content": TRADING_RULES_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": prompt
-                }
+                    "content": prompt,
+                },
             ],
             "temperature": LLM_TEMPERATURE,
-            "max_tokens": LLM_MAX_TOKENS
+            "max_tokens": LLM_MAX_TOKENS,
         }
         if LLM_THINKING_PARAM is not None:
             request_payload["thinking"] = LLM_THINKING_PARAM
 
+        headers: Dict[str, str] = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        api_type = (LLM_API_TYPE or "openrouter").lower()
+        if api_type == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/crypto-trading-bot"
+            headers["X-Title"] = "DeepSeek Trading Bot"
+
         response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/crypto-trading-bot",
-                "X-Title": "DeepSeek Trading Bot",
-            },
+            url=LLM_API_BASE_URL,
+            headers=headers,
             json=request_payload,
-            timeout=30
+            timeout=30,
         )
 
         if response.status_code != 200:
             notify_error(
-                f"OpenRouter API error: {response.status_code}",
+                f"LLM API error: {response.status_code}",
                 metadata={
                     "status_code": response.status_code,
                     "response_text": response.text,
@@ -1564,7 +1694,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
         choices = result.get("choices")
         if not choices:
             notify_error(
-                "DeepSeek API returned no choices",
+                "LLM API returned no choices",
                 metadata={
                     "status_code": response.status_code,
                     "response_text": response.text[:500],
@@ -1589,9 +1719,8 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
             }
         )
 
-        # Extract JSON from response (in case there's extra text)
-        start = content.find('{')
-        end = content.rfind('}') + 1
+        start = content.find("{")
+        end = content.rfind("}") + 1
         if start != -1 and end > start:
             json_str = content[start:end]
             try:
@@ -1603,14 +1732,14 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                     decisions, missing_coins = recovery
                     if missing_coins:
                         notification_message = (
-                            "DeepSeek response truncated; defaulted to hold for missing coins"
+                            "LLM response truncated; defaulted to hold for missing coins"
                         )
                     else:
                         notification_message = (
-                            "DeepSeek response malformed; recovered all coin decisions"
+                            "LLM response malformed; recovered all coin decisions"
                         )
                     logging.warning(
-                        "Recovered DeepSeek response after JSON error (missing coins: %s)",
+                        "Recovered LLM response after JSON error (missing coins: %s)",
                         ", ".join(missing_coins) or "none",
                     )
                     notify_error(
@@ -1628,7 +1757,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                     return decisions
                 snippet = json_str[:2000]
                 notify_error(
-                    f"DeepSeek JSON decode failed: {decode_err}",
+                    f"LLM JSON decode failed: {decode_err}",
                     metadata={
                         "response_id": result.get("id"),
                         "status_code": response.status_code,
@@ -1639,7 +1768,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                 return None
         else:
             notify_error(
-                "No JSON found in DeepSeek response",
+                "No JSON found in LLM response",
                 metadata={
                     "response_id": result.get("id"),
                     "status_code": response.status_code,
@@ -1647,11 +1776,10 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                 },
             )
             return None
-            
     except Exception as e:
-        logging.exception("Error calling DeepSeek API")
+        logging.exception("Error calling LLM API")
         notify_error(
-            f"Error calling DeepSeek API: {e}",
+            f"Error calling LLM API: {e}",
             metadata={"context": "call_deepseek_api"},
             log_error=False,
         )
@@ -1825,7 +1953,6 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
     except (TypeError, ValueError):
         logging.warning(f"{coin}: Invalid leverage '%s'; defaulting to 1x", leverage_raw)
         leverage = 1.0
-    leverage_display = format_leverage_display(leverage)
 
     risk_usd_raw = decision.get('risk_usd', balance * 0.01)
     try:
@@ -1833,6 +1960,14 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
     except (TypeError, ValueError):
         logging.warning(f"{coin}: Invalid risk_usd '%s'; defaulting to 1%% of balance.", risk_usd_raw)
         risk_usd = balance * 0.01
+
+    if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
+        if leverage > BINANCE_FUTURES_MAX_LEVERAGE:
+            leverage = BINANCE_FUTURES_MAX_LEVERAGE
+        if risk_usd > BINANCE_FUTURES_MAX_RISK_USD:
+            risk_usd = BINANCE_FUTURES_MAX_RISK_USD
+
+    leverage_display = format_leverage_display(leverage)
 
     try:
         stop_loss_price = float(decision['stop_loss'])
@@ -1893,6 +2028,26 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
     quantity = risk_usd / stop_distance
     position_value = quantity * current_price
     margin_required = position_value / leverage if leverage else position_value
+
+    if (
+        TRADING_BACKEND == "binance_futures"
+        and BINANCE_FUTURES_LIVE
+        and BINANCE_FUTURES_MAX_MARGIN_USD > 0
+        and margin_required > BINANCE_FUTURES_MAX_MARGIN_USD
+    ):
+        logging.info(
+            "%s: Margin %.2f exceeds max Binance futures margin %.2f; scaling position down.",
+            coin,
+            margin_required,
+            BINANCE_FUTURES_MAX_MARGIN_USD,
+        )
+        margin_required = BINANCE_FUTURES_MAX_MARGIN_USD
+        position_value = margin_required * leverage
+        quantity = position_value / current_price
+        # After scaling by max margin, recompute the actual risk in USD for logging/state
+        effective_risk_usd = quantity * stop_distance
+        if effective_risk_usd < risk_usd:
+            risk_usd = effective_risk_usd
     
     liquidity = str(decision.get('liquidity', 'taker')).lower()
     fee_rate = decision.get('fee_rate')
@@ -1915,7 +2070,44 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
         return
 
     live_entry_receipt = None
-    if hyperliquid_trader.is_live:
+    if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
+        exchange = get_binance_futures_exchange()
+        if not exchange:
+            logging.error(
+                "Binance futures live trading enabled but client initialization failed; aborting entry.",
+            )
+            return
+        symbol = COIN_TO_SYMBOL.get(coin)
+        if not symbol:
+            logging.error("%s: No Binance symbol mapping found; aborting live entry.", coin)
+            return
+        order_side = "buy" if side == "long" else "sell"
+        try:
+            try:
+                leverage_int = int(leverage)
+                exchange.set_leverage(leverage_int, symbol)
+            except Exception as exc:
+                logging.warning(
+                    "Failed to set leverage %s for %s on Binance futures: %s",
+                    leverage,
+                    symbol,
+                    exc,
+                )
+            params = {
+                "positionSide": "LONG" if side == "long" else "SHORT",
+            }
+            order = exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side=order_side,
+                amount=quantity,
+                params=params,
+            )
+            live_entry_receipt = {"success": True, "order": order}
+        except Exception as exc:
+            logging.error("%s: Binance futures live entry failed: %s", coin, exc)
+            return
+    elif hyperliquid_trader.is_live:
         live_entry_receipt = hyperliquid_trader.place_entry_with_sl_tp(
             coin=coin,
             side=side,
@@ -2117,7 +2309,35 @@ def execute_close(coin: str, decision: Dict[str, Any], current_price: float) -> 
     net_pnl = pnl - total_fees
 
     live_close_receipt = None
-    if hyperliquid_trader.is_live:
+    if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
+        exchange = get_binance_futures_exchange()
+        if not exchange:
+            logging.error(
+                "Binance futures live trading enabled but client initialization failed; position remains open.",
+            )
+            return
+        symbol = COIN_TO_SYMBOL.get(coin)
+        if not symbol:
+            logging.error("%s: No Binance symbol mapping found; position remains open.", coin)
+            return
+        order_side = "sell" if pos['side'] == "long" else "buy"
+        try:
+            params = {
+                "reduceOnly": True,
+                "positionSide": "LONG" if pos['side'] == "long" else "SHORT",
+            }
+            order = exchange.create_order(
+                symbol=symbol,
+                type="market",
+                side=order_side,
+                amount=pos['quantity'],
+                params=params,
+            )
+            live_close_receipt = {"success": True, "order": order}
+        except Exception as exc:
+            logging.error("%s: Binance futures live close failed: %s", coin, exc)
+            return
+    elif hyperliquid_trader.is_live:
         live_close_receipt = hyperliquid_trader.close_position(
             coin=coin,
             side=pos['side'],
@@ -2412,11 +2632,11 @@ def main() -> None:
     init_csv_files()
     load_equity_history()
     load_state()
-    
-    if not OPENROUTER_API_KEY:
-        logging.error("OPENROUTER_API_KEY not found in .env file")
+
+    if not LLM_API_KEY:
+        logging.error("No LLM API key configured; expected LLM_API_KEY or OPENROUTER_API_KEY in environment.")
         return
-    
+
     logging.info(f"Starting capital: ${START_CAPITAL:.2f}")
     logging.info(f"Monitoring: {', '.join(SYMBOL_TO_COIN.values())}")
     if hyperliquid_trader.is_live:
@@ -2426,6 +2646,15 @@ def main() -> None:
         )
     else:
         logging.info("Hyperliquid live trading disabled; running in paper mode only.")
+    if TRADING_BACKEND == "binance_futures":
+        if BINANCE_FUTURES_LIVE:
+            logging.warning(
+                "Binance futures LIVE trading enabled; orders will be sent to Binance USDT-margined futures.",
+            )
+        else:
+            logging.warning(
+                "TRADING_BACKEND=binance_futures but BINANCE_FUTURES_LIVE is not true; running in paper mode only.",
+            )
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         logging.info("Telegram notifications enabled (chat: %s).", TELEGRAM_CHAT_ID)
     else:
@@ -2528,9 +2757,9 @@ def main() -> None:
             log_portfolio_state()
             save_state()
             
-            # Wait for next check
+            # Wait for next check with visible console countdown
             logging.info(f"Waiting {CHECK_INTERVAL} seconds until next check...")
-            time.sleep(CHECK_INTERVAL)
+            sleep_with_countdown(CHECK_INTERVAL)
             
         except KeyboardInterrupt:
             print("\n\nShutting down bot...")

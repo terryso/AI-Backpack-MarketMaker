@@ -444,6 +444,18 @@ def configure_environment(cfg: BacktestConfig) -> None:
         os.environ["TELEGRAM_BOT_TOKEN"] = ""
         os.environ["TELEGRAM_CHAT_ID"] = ""
 
+    bt_llm_base_url = os.getenv("BACKTEST_LLM_API_BASE_URL")
+    if bt_llm_base_url:
+        os.environ["LLM_API_BASE_URL"] = bt_llm_base_url
+
+    bt_llm_key = os.getenv("BACKTEST_LLM_API_KEY")
+    if bt_llm_key:
+        os.environ["LLM_API_KEY"] = bt_llm_key
+
+    bt_llm_type = os.getenv("BACKTEST_LLM_API_TYPE")
+    if bt_llm_type:
+        os.environ["LLM_API_TYPE"] = bt_llm_type
+
 
 def main() -> None:
     configure_logging()

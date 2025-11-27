@@ -11,6 +11,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from binance.client import Client
 from dotenv import load_dotenv
 
@@ -543,6 +544,7 @@ def render_ai_tab(decisions_df: pd.DataFrame, messages_df: pd.DataFrame) -> None
 
 def main() -> None:
     st.set_page_config(page_title="DeepSeek Bot Monitor", layout="wide")
+    st_autorefresh(interval=30_000, key="auto_refresh")
     st.title("DeepSeek Trading Bot Monitor")
     st.caption(
         "Source code available at "

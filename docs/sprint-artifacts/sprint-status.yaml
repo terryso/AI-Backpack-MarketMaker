@@ -37,5 +37,5 @@ story_location: "/Users/nick/CascadeProjects/LLM-trader-test/docs/sprint-artifac
 
 development_status:
   epic-1: backlog
-  1-1-configure-openai-llm-provider-via-env: ready-for-dev
+  1-1-configure-openai-llm-provider-via-env: done
   epic-1-retrospective: optional

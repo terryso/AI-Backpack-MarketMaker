@@ -7,3 +7,5 @@ colorama==0.4.6
 streamlit==1.38.0
 hyperliquid-python-sdk>=0.9.0
 eth-account>=0.10.0
+ccxt
+streamlit-autorefresh
