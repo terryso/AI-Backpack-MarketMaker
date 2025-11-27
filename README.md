@@ -145,6 +145,54 @@ The bot runs in paper-trading mode by default and never touches live capital. To
 
 When live mode is active the bot submits IOC (market-like) entry/exit orders and attaches reduce-only stop-loss / take-profit triggers on Hyperliquid mainnet using isolated leverage. If initialization fails (missing SDK, credentials, etc.) the bot falls back to paper trading and logs a warning. Treat your private key with care—avoid checking it into version control and prefer a dedicated trading wallet.
 
+## Trading Backends & Live Mode Configuration
+
+The bot separates **backend selection** from **live-mode switches**. All behavior is driven by environment variables:
+
+- `TRADING_BACKEND` marks the **intended** execution backend:
+  - `paper` (default) → paper trading only.
+  - `hyperliquid` → you intend to use Hyperliquid as the live backend.
+  - `binance_futures` → you intend to use Binance USDT-margined futures as the live backend.
+- `HYPERLIQUID_LIVE_TRADING` is the master flag for sending live orders to Hyperliquid. When this is `true` and the SDK/credentials are valid, Hyperliquid live execution is enabled regardless of `TRADING_BACKEND`.
+- `BINANCE_FUTURES_LIVE` is the master flag for sending live orders to Binance USDT-margined futures. It is only consulted when `TRADING_BACKEND=binance_futures`.
+
+Safe defaults:
+
+- If `TRADING_BACKEND` is unset or invalid, the bot falls back to `paper`.
+- Both live flags default to `false`, so a fresh checkout always runs in paper mode only.
+
+### Backend × Live-mode Matrix (Current Implementation)
+
+| TRADING_BACKEND   | HYPERLIQUID_LIVE_TRADING | BINANCE_FUTURES_LIVE | Effective behavior |
+|-------------------|--------------------------|-----------------------|--------------------|
+| `paper` (or unset)| `false`                  | `false`               | Pure paper trading; no live orders are sent. |
+| `hyperliquid`     | `true`                   | `false`               | Live orders go to Hyperliquid via `HyperliquidTradingClient`; `START_CAPITAL` uses `HYPERLIQUID_CAPITAL`. |
+| `binance_futures` | `false`                  | `false`               | Paper trading only; Binance risk caps are parsed but no live orders are sent. |
+| `binance_futures` | `false`                  | `true`                | Live orders go to Binance USDT-margined futures via `BinanceFuturesExchangeClient`; margin/risk limits enforced. |
+
+> 推荐做法：一次只开启一个实盘 backend。若你希望使用 Hyperliquid 实盘，请将 `TRADING_BACKEND=hyperliquid` 且仅设置 `HYPERLIQUID_LIVE_TRADING=true`；若使用 Binance Futures 实盘，请将 `TRADING_BACKEND=binance_futures` 且仅设置 `BINANCE_FUTURES_LIVE=true`。
+
+#### Hyperliquid live configuration (summary)
+
+- Recommended for Hyperliquid mainnet:
+  - `TRADING_BACKEND=hyperliquid`
+  - `HYPERLIQUID_LIVE_TRADING=true`
+  - `HYPERLIQUID_WALLET_ADDRESS=0xYourWallet`
+  - `HYPERLIQUID_PRIVATE_KEY=your_private_key_or_vault_key`
+  - `HYPERLIQUID_CAPITAL` set to the live capital you are willing to risk.
+- See the **Hyperliquid Live Trading (Optional)** section above for behavior details and the smoke-test command.
+
+#### Binance Futures live configuration (summary)
+
+- Recommended for Binance USDT-margined futures:
+  - `TRADING_BACKEND=binance_futures`
+  - `BINANCE_FUTURES_LIVE=true`
+  - `BINANCE_API_KEY` / `BINANCE_API_SECRET` (or `BN_API_KEY` / `BN_SECRET`) configured.
+  - `BINANCE_FUTURES_MAX_RISK_USD` set to a per-trade risk cap in USD.
+  - `BINANCE_FUTURES_MAX_LEVERAGE` set to a sane leverage ceiling.
+  - Optional: `BINANCE_FUTURES_MAX_MARGIN_USD` to cap margin per position (0.0 = no extra cap).
+- A small live smoke-test is available in `scripts/manual_binance_futures_smoke.py`.
+
 ## Build the Image
 
 ```bash

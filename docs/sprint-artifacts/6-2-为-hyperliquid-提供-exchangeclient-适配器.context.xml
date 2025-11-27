@@ -1,0 +1,174 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>6</epicId>
+    <storyId>2</storyId>
+    <title>为 Hyperliquid 提供 ExchangeClient 适配器</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-27T03:57:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (SM agent)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/6-2-为-hyperliquid-提供-exchangeclient-适配器.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>developer maintaining Hyperliquid live trading</asA>
+    <iWant>HyperliquidTradingClient to be wrapped behind the unified ExchangeClient interface</iWant>
+    <soThat>Hyperliquid live execution can be used transparently by the bot</soThat>
+    <tasks>
+- 任务 1：梳理 Hyperliquid 现有执行路径与 ExchangeClient 抽象（AC: #1, #2, #3）
+  - 通读 `hyperliquid_client.HyperliquidTradingClient`，重点关注 `place_entry_with_sl_tp`、`close_position` 以及返回结构中与订单状态/错误信息相关的字段。
+  - 对照 `exchange_client.EntryResult` / `CloseResult` 与 Story 6.1 文档，列出需要从 Hyperliquid 原始响应中映射到统一结果结构的关键字段（success/backend/errors/oid/raw/extra）。
+  - 结合 `docs/prd.md` 4.8「Hyperliquid 实盘集成」与 `docs/architecture/03-data-flow.md` / `04-integrations.md`，确认在本 Story 范围内不应改变的行为与边界（例如：实盘开关、错误回退到纸上交易等）。
+
+- 任务 2：设计与实现 HyperliquidExchangeClient 适配器（AC: #1, #2）
+  - 在 `exchange_client.py` 中新增 `HyperliquidExchangeClient` 类，实现 `ExchangeClient` 协议，并通过组合（而非继承）持有一个 `HyperliquidTradingClient` 实例。
+  - 在 `place_entry(...)` 中调用 `HyperliquidTradingClient.place_entry_with_sl_tp`，并将返回结果解析为 `EntryResult`：包含 `success`、`backend`、`errors`、`entry_oid` / `tp_oid` / `sl_oid`、`raw`、`extra` 等。
+  - 在 `close_position(...)` 中调用对应的 Hyperliquid 平仓方法，将返回值封装为 `CloseResult`，并对错误与异常做统一处理。
+
+- 任务 3：接入与最小行为验证（AC: #2, #3）
+  - 在合适的位置（例如 `exchange_client.get_exchange_client` 或 Bot 的初始化路径）为 `backend="hyperliquid"` 场景返回 `HyperliquidExchangeClient` 实例，但避免在本 Story 内对 `execute_entry` / `execute_close` 做大规模重构（留给 Story 6.4）。
+  - 通过最小 smoke 测试（例如基于 `scripts/manual_hyperliquid_smoke.py` 或新建一个轻量脚本）验证：在典型 ENTRY/CLOSE 路径下，适配器封装前后对 Hyperliquid 的实际行为等价。
+  - 检查日志与错误信息：确认 `EntryResult` / `CloseResult` 的 `errors` 字段为上层调用提供了比原始响应更清晰的诊断语义，而不会丢失关键信息。
+
+- 任务 4：文档与架构映射对齐（AC: #3）
+  - 在本 Story 文档的 Dev Notes / Project Structure Notes 中补充 Hyperliquid 适配器与 Epic 6、PRD 4.8 以及架构 06/07 章节的映射关系。
+  - 如有必要，在 `docs/architecture/06-project-structure-and-mapping.md` 或相关文档中补充一条关于 Exchange Execution Layer 与 Hyperliquid 适配器的条目。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+1. 实现 HyperliquidExchangeClient 适配器，实现 ExchangeClient 接口。
+2. 将 Hyperliquid 原始响应映射到统一的 EntryResult / CloseResult 结构，填充 backend、success、errors 与各类 OID，并保留 raw。
+3. 保持现有 Hyperliquid 行为与体验不变，仅通过适配器与结果映射层对外统一语义。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Story 6.2: 为 Hyperliquid 提供 ExchangeClient 适配器</section>
+        <snippet>Epic 6 规划了统一交易所执行层，Story 6.2 聚焦将现有 HyperliquidTradingClient 封装到统一 ExchangeClient 抽象之下，并保证行为不变。</snippet>
+      </doc>
+      <doc>
+        <path>docs/prd.md</path>
+        <title>DeepSeek Paper Trading Bot 产品需求文档</title>
+        <section>4.8 Hyperliquid 实盘集成</section>
+        <snippet>描述开启 Hyperliquid 实盘的前提条件、tick size 正规化、SL/TP 触发单行为以及失败时回退到纸上交易的要求，是设计 HyperliquidExchangeClient 时必须遵守的边界。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/03-data-flow.md</path>
+        <title>3. 数据流</title>
+        <section>3.1 实时交易路径</section>
+        <snippet>说明从多时间框架行情与 LLM 决策到本地校验与执行的完整链路，其中实盘路径通过 HyperliquidTradingClient 下单并挂 SL/TP，是本 Story 适配器的上游/下游环境。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/04-integrations.md</path>
+        <title>4. 外部依赖与集成点</title>
+        <section>Hyperliquid</section>
+        <snippet>将 Hyperliquid 标记为可选的实盘执行端，并强调通过环境变量配置密钥，是实现 ExchangeClient 适配层时必须延续的集成方式。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>6. 项目结构与源码树</title>
+        <section>6.2 PRD 功能块到架构组件的映射</section>
+        <snippet>指出 Hyperliquid 实盘集成由 hyperliquid_client.py 与 bot.py 共同承载，有助于在实现 HyperliquidExchangeClient 时定位现有执行路径和数据流。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>7. 实现模式与一致性规则</title>
+        <section>7.4 / 7.6 / 7.8</section>
+        <snippet>给出外部服务适配、配置与密钥位置以及测试与校验的推荐模式，本 Story 的适配器实现需要遵守这些一致性规则。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>exchange_client.py</path>
+        <kind>execution-abstraction</kind>
+        <symbol>EntryResult, CloseResult, ExchangeClient, get_exchange_client</symbol>
+        <lines>7-42,45-84,87-99</lines>
+        <reason>定义统一的执行结果结构与 ExchangeClient 协议，并预留 get_exchange_client 工厂，是 HyperliquidExchangeClient 适配器需要实现和接入的目标接口。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>hyperliquid_client.py</path>
+        <kind>live-execution-adapter</kind>
+        <symbol>HyperliquidTradingClient.place_entry_with_sl_tp, HyperliquidTradingClient.close_position</symbol>
+        <lines>22-33,96-208,210-272,561-583,586-618</lines>
+        <reason>当前 Hyperliquid 实盘执行适配器，封装了杠杆设置、价格正规化、SL/TP 触发单以及订单状态解析，是适配层内部实际调用的实现。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>scripts/manual_hyperliquid_smoke.py</path>
+        <kind>smoke-test-script</kind>
+        <symbol>run_smoke_test, determine_order_params</symbol>
+        <lines>32-38,81-177,179-291,341-370</lines>
+        <reason>用于手工验证 Hyperliquid live 路径，在实现 HyperliquidExchangeClient 后可重用该脚本或其思路作为最小行为回归。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>trading-loop</kind>
+        <symbol>TRADING_BACKEND, HYPERLIQUID_LIVE_TRADING, execute_entry/execute_close (后续重构目标)</symbol>
+        <lines>28-31,114-142,671-678</lines>
+        <reason>主交易循环与 backend 选择逻辑，后续 Story 6.4 会将其重构为依赖 ExchangeClient 抽象，本 Story 的适配器实现需要与这些约束保持一致。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version="&gt;=0.9.0" />
+      <dependency ecosystem="python" name="eth-account" version="&gt;=0.10.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="ccxt" version="unspecified" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-dotenv" version="1.0.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+- ExchangeClient 抽象层不得直接读取环境变量或持有密钥，配置与密钥必须通过 `.env` 和集中配置在上层完成（见架构 7.6）。
+- HyperliquidExchangeClient 必须复用现有 HyperliquidTradingClient 的 tick size 归一化、订单簿读取与触发单实现，不得在适配器中复制一套独立逻辑。
+- 适配器需要保证对错误与异常的处理符合项目既有模式：记录可读错误摘要、保留原始 payload，并在需要时通过 notify_error/日志输出供运维排查。
+- 在 TRADING_BACKEND 与 live 开关组合下，不得引入新的「隐式实盘」路径；仍需通过明确的环境变量控制是否启用 Hyperliquid live。
+  </constraints>
+
+  <interfaces>
+    <interface>
+      <name>ExchangeClient.place_entry</name>
+      <kind>python-protocol</kind>
+      <signature>place_entry(coin, side, size, entry_price, stop_loss_price, take_profit_price, leverage, liquidity, **kwargs) -&gt; EntryResult</signature>
+      <path>exchange_client.py</path>
+    </interface>
+    <interface>
+      <name>ExchangeClient.close_position</name>
+      <kind>python-protocol</kind>
+      <signature>close_position(coin, side, size: Optional[float] = None, fallback_price: Optional[float] = None, **kwargs) -&gt; CloseResult</signature>
+      <path>exchange_client.py</path>
+    </interface>
+    <interface>
+      <name>HyperliquidTradingClient.place_entry_with_sl_tp</name>
+      <kind>concrete-implementation</kind>
+      <signature>place_entry_with_sl_tp(coin, side, size, entry_price, stop_loss_price, take_profit_price, leverage, liquidity) -&gt; Dict[str, Any]</signature>
+      <path>hyperliquid_client.py</path>
+    </interface>
+    <interface>
+      <name>HyperliquidTradingClient.close_position</name>
+      <kind>concrete-implementation</kind>
+      <signature>close_position(coin, side, size: Optional[float] = None, fallback_price: Optional[float] = None) -&gt; Dict[str, Any]</signature>
+      <path>hyperliquid_client.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards>
+- 参考架构文档 7.8「测试与校验模式」：为关键执行路径与错误分支优先补充单元测试与轻量集成测试；Hyperliquid 集成仍以手工 smoke test 为主，不应纳入 CI。
+- 在本 Story 中，重点关注适配器对 EntryResult / CloseResult 的字段映射与错误语义是否稳定、可回放。
+    </standards>
+    <locations>
+- 推荐未来将自动化测试放在 tests/ 目录，针对 exchange_client.py 与 HyperliquidExchangeClient 编写契约测试。
+- 现有手工验证脚本位于 scripts/manual_hyperliquid_smoke.py，可作为集成验证入口。
+    </locations>
+    <ideas>
+- [AC1] 为 HyperliquidExchangeClient.place_entry/close_position 编写单元测试，使用构造的 HyperliquidTradingClient 响应 payload，验证 EntryResult / CloseResult 字段映射正确（success/backend/errors/oid/raw）。
+- [AC2] 模拟各种错误与拒单场景，确认 errors 字段能够给出清晰摘要，同时 raw 保留完整 payload，且不会因异常结构导致崩溃。
+- [AC3] 结合 scripts/manual_hyperliquid_smoke.py 或简化版本，做一次端到端 smoke，验证在真实环境中适配器封装前后行为等价（订单状态与日志语义保持一致）。
+    </ideas>
+  </tests>
+</story-context>

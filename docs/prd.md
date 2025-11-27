@@ -186,6 +186,7 @@ DeepSeek Paper Trading Bot 是一个 **多资产加密货币交易机器人**，
    - 使用 Hyperliquid SDK 初始化账户与连接。
    - 根据 tick size 正规化价格，使用 IOC/GTC 下单，并自动挂 SL/TP 触发单。
    - 若初始化失败则退回纸上交易，并记录错误日志。
+   - 具体环境变量与 backend 选择语义，详见：根目录 `.env.example` 以及 README 中的「Trading Backends & Live Mode Configuration」小节。
 
 ## 5. 非功能需求
 

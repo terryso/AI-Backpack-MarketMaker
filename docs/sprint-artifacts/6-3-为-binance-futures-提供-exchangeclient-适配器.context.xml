@@ -1,0 +1,129 @@
+<story-context id="LLM-trader-test/story-6-3" v="1.0">
+  <metadata>
+    <epicId>6</epicId>
+    <storyId>3</storyId>
+    <title>为 Binance Futures 提供 ExchangeClient 适配器</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-27T00:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/6-3-为-binance-futures-提供-exchangeclient-适配器.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>developer adding multi-exchange support</asA>
+    <iWant>Binance Futures live trading to be accessed via the same ExchangeClient abstraction</iWant>
+    <soThat>the bot call-site does not need Binance-specific branching and future exchanges can be added safely</soThat>
+    <tasks>
+      - 梳理现有 Binance Futures 实盘路径与风险/保证金约束
+      - 在 exchange_client.py 中实现 BinanceFuturesExchangeClient 适配器
+      - 将 ENTRY/CLOSE 逻辑接入 ExchangeClient 工厂并打通 TRADING_BACKEND="binance_futures" 路径
+      - 编写测试与最小 smoke 验证脚本，确保行为与现有实现等价
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - 实现 BinanceFuturesExchangeClient 适配器，封装 ccxt create_order 与 reduce-only 市价平仓
+    - 将 Binance 响应映射为统一的 EntryResult / CloseResult（backend="binance_futures"，errors/raw/extra 语义明确）
+    - 明确当前阶段 SL/TP 仍由 bot.py 负责，适配器聚焦执行与结果映射
+    - 在 TRADING_BACKEND="binance_futures" 且 BINANCE_FUTURES_LIVE=true 时，通过 ExchangeClient 达到与现有实盘路径等价的行为
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - path: docs/epics.md
+        title: Epic 6 - 统一交易所执行层 &amp; 多交易所可插拔支持
+        section: Story 6.3: 为 Binance Futures 提供 ExchangeClient 适配器
+        snippet: 描述通过 ExchangeClient 抽象封装 Binance Futures 实盘路径，并在 TRADING_BACKEND="binance_futures" 下实现与现有逻辑等价的行为。
+      - path: docs/PRD.md
+        title: DeepSeek Paper Trading Bot 产品需求文档
+        section: 4.1 交易主循环 / 4.2 风险控制
+        snippet: 约束单笔风险、止损必选、日志与可观测性等全局规则，为 Binance Futures 实盘路径提供统一风控基线。
+      - path: docs/architecture/03-data-flow.md
+        title: 架构 - 数据流
+        section: 3.1 实时交易路径
+        snippet: 描述从 Binance 行情 → LLM 决策 → 执行层的整体数据流，为适配器接入点提供上下文。
+      - path: docs/architecture/04-integrations.md
+        title: 架构 - 外部依赖与集成点
+        section: Binance / Hyperliquid 集成
+        snippet: 说明 Binance 作为行情与执行后端的角色，以及通过环境变量配置外部服务的通用模式。
+    </docs>
+
+    <code>
+      - path: exchange_client.py
+        kind: service
+        symbol: ExchangeClient / EntryResult / CloseResult / HyperliquidExchangeClient
+        lines: 1-252
+        reason: 定义统一执行抽象与结果结构，并提供 Hyperliquid 适配器的参考实现；BinanceFuturesExchangeClient 将在此文件中以对称方式实现。
+      - path: bot.py
+        kind: service
+        symbol: get_binance_futures_exchange / Binance futures entry & close branches
+        lines: 130-160, 438-485, 1957-2155, 2310-2353
+        reason: 当前 Binance Futures 实盘逻辑所在，包括 TRADING_BACKEND 配置、风控限制、ENTRY/CLOSE 分支，将在 Story 6.3/6.4 中逐步迁移到 ExchangeClient。
+      - path: hyperliquid_client.py
+        kind: service
+        symbol: HyperliquidTradingClient
+        lines: 1-272
+        reason: 为 Hyperliquid 实盘路径提供执行细节，可对比 Binance 适配器所需职责边界。
+      - path: tests/test_exchange_client_hyperliquid.py
+        kind: test
+        symbol: HyperliquidExchangeClientTests
+        lines: 1-214
+        reason: 为 ExchangeClient 适配器提供单元测试模式示例，可按对称方式为 Binance 引入测试。
+      - path: scripts/manual_hyperliquid_smoke.py
+        kind: script
+        symbol: run_smoke_test / --use-exchange-client
+        lines: 1-419
+        reason: 提供调用 HyperliquidExchangeClient 的端到端 smoke 测试脚本，可为 Binance 设计类似的最小验证脚本。
+    </code>
+
+    <dependencies>
+      - ecosystem: python
+        manifest: requirements.txt
+        packages:
+          - name: ccxt
+            version: latest (as pinned by environment)
+          - name: python-binance
+            version: 1.0.19
+          - name: hyperliquid-python-sdk
+            version: ">=0.9.0"
+          - name: pandas
+            version: 2.2.3
+          - name: numpy
+            version: 2.1.3
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - 遵守 PRD 4.2 关于单笔风险、止损必选与风险上限的约束；Binance Futures 实盘路径不得突破现有 `BINANCE_FUTURES_MAX_RISK_USD` 与 `BINANCE_FUTURES_MAX_MARGIN_USD`。
+    - 避免在适配器中直接读取环境变量；外部服务初始化逻辑（API Key/Secret 检查等）仍由 bot.py 或独立工厂函数负责。
+    - 错误处理遵循架构 7.5 的模式：记录清晰日志，尽量不中断主循环；严重配置错误在启动阶段显式失败。
+    - ExchangeClient 适配器应与 Hyperliquid 路径在接口与语义上保持对称，便于在 Story 6.4 中统一 `execute_entry` / `execute_close` 实现。
+  </constraints>
+
+  <interfaces>
+    - name: ExchangeClient.place_entry
+      kind: interface
+      signature: place_entry(coin, side, size, entry_price, stop_loss_price, take_profit_price, leverage, liquidity, **kwargs) -> EntryResult
+      path: exchange_client.py
+    - name: ExchangeClient.close_position
+      kind: interface
+      signature: close_position(coin, side, size=None, fallback_price=None, **kwargs) -> CloseResult
+      path: exchange_client.py
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 使用 Python unittest/pytest 为适配器编写单元测试，覆盖成功与错误路径，并验证 errors/raw/extra 字段语义。
+      - 通过手工 smoke 测试脚本（类比 manual_hyperliquid_smoke.py）在小额实盘环境中验证 ENTRY/CLOSE 行为与日志输出。
+    </standards>
+    <locations>
+      - tests/
+      - scripts/
+    </locations>
+    <ideas>
+      - 针对 AC1/AC2：构造 ccxt 响应 stub，验证 EntryResult / CloseResult 的 success/backend/errors/oid/raw/extra 是否符合预期。
+      - 针对 AC3：模拟 API key 缺失、初始化失败、下单异常等场景，检查错误聚合与日志输出是否清晰。
+      - 针对 AC4：在测试或模拟环境中比较 TRADING_BACKEND="binance_futures" 路径与现有实现的行为差异，确保不影响风险与资金管理逻辑。
+    </ideas>
+  </tests>
+</story-context>

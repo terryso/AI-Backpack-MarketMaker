@@ -28,6 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hyperliquid_client import HyperliquidTradingClient
+from exchange_client import HyperliquidExchangeClient
 
 DEFAULT_COIN = "BTC"
 DEFAULT_NOTIONAL = Decimal("2")  # ~2 USD
@@ -183,6 +184,7 @@ def run_smoke_test(
     wait_seconds: int,
     sl_bps: int,
     tp_bps: int,
+    use_exchange_client: bool = False,
 ) -> None:
     load_dotenv(override=True)
 
@@ -200,11 +202,20 @@ def run_smoke_test(
     if not trader.is_live:
         raise SystemExit("Hyperliquid live trading is not available. Check credentials and SDK install.")
 
+    exchange_client = None
+    if use_exchange_client:
+        exchange_client = HyperliquidExchangeClient(trader=trader)
+
     logging.info(
         "Running Hyperliquid smoke test on %s with ~%s USD notional at %sx leverage.",
         market_label,
         notional,
         leverage,
+    )
+    logging.info(
+        "Using backend=%s (exchange_client=%s)",
+        "hyperliquid",
+        bool(exchange_client is not None),
     )
 
     size, stop_loss_price, take_profit_price, entry_limit_price = determine_order_params(
@@ -225,16 +236,38 @@ def run_smoke_test(
         take_profit_price,
     )
 
-    entry_receipt = trader.place_entry_with_sl_tp(
-        coin=coin_name,
-        side="long",
-        size=size,
-        entry_price=entry_limit_price,
-        stop_loss_price=stop_loss_price,
-        take_profit_price=take_profit_price,
-        leverage=leverage,
-        liquidity="taker",
-    )
+    if exchange_client is not None:
+        entry_result = exchange_client.place_entry(
+            coin=coin_name,
+            side="long",
+            size=size,
+            entry_price=entry_limit_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            leverage=leverage,
+            liquidity="taker",
+        )
+        entry_extra = entry_result.extra if isinstance(entry_result.extra, dict) else {}
+        entry_receipt = {
+            "success": entry_result.success,
+            "entry_result": entry_extra.get("entry_result"),
+            "stop_loss_result": entry_extra.get("stop_loss_result"),
+            "take_profit_result": entry_extra.get("take_profit_result"),
+            "entry_oid": entry_result.entry_oid,
+            "stop_loss_oid": entry_result.sl_oid,
+            "take_profit_oid": entry_result.tp_oid,
+        }
+    else:
+        entry_receipt = trader.place_entry_with_sl_tp(
+            coin=coin_name,
+            side="long",
+            size=size,
+            entry_price=entry_limit_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            leverage=leverage,
+            liquidity="taker",
+        )
 
     if not entry_receipt.get("success"):
         logging.error("Entry order failed: %s", entry_receipt.get("entry_result"))
@@ -269,12 +302,26 @@ def run_smoke_test(
     logging.info("Sleeping %d seconds before closing...", wait_seconds)
     time.sleep(wait_seconds)
 
-    close_receipt = trader.close_position(
-        coin=coin_name,
-        side="long",
-        size=size,
-        fallback_price=entry_limit_price,
-    )
+    if exchange_client is not None:
+        close_result = exchange_client.close_position(
+            coin=coin_name,
+            side="long",
+            size=size,
+            fallback_price=entry_limit_price,
+        )
+        close_extra = close_result.extra if isinstance(close_result.extra, dict) else {}
+        close_receipt = {
+            "success": close_result.success,
+            "close_result": close_extra.get("close_result"),
+            "close_oid": close_result.close_oid,
+        }
+    else:
+        close_receipt = trader.close_position(
+            coin=coin_name,
+            side="long",
+            size=size,
+            fallback_price=entry_limit_price,
+        )
 
     if not close_receipt.get("success"):
         logging.error("Close order failed: %s", close_receipt.get("close_result"))
@@ -335,6 +382,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Python logging level (default: %(default)s)",
     )
+    parser.add_argument(
+        "--use-exchange-client",
+        action="store_true",
+        help="Route orders through HyperliquidExchangeClient adapter for this smoke test",
+    )
     return parser
 
 
@@ -355,6 +407,7 @@ def main() -> None:
             wait_seconds=args.wait,
             sl_bps=args.sl_bps,
             tp_bps=args.tp_bps,
+            use_exchange_client=args.use_exchange_client,
         )
     except KeyboardInterrupt:
         logging.error("Interrupted by user.")

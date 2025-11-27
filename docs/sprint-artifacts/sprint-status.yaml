@@ -39,3 +39,10 @@ development_status:
   epic-1: backlog
   1-1-configure-openai-llm-provider-via-env: done
   epic-1-retrospective: optional
+  epic-6: backlog
+  6-1-定义-exchangeclient-抽象接口与统一结果结构: done
+  6-2-为-hyperliquid-提供-exchangeclient-适配器: in-progress
+  6-3-为-binance-futures-提供-exchangeclient-适配器: done
+  6-4-将-execute-entry-execute-close-重构为使用-exchangeclient: done
+  6-5-统一配置语义并为未来交易所留扩展点: done
+  epic-6-retrospective: optional

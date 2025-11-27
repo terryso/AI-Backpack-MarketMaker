@@ -1,0 +1,81 @@
+<story-context id="bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>6</epicId>
+    <storyId>1</storyId>
+    <title>定义 ExchangeClient 抽象接口与统一结果结构</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-11-27T00:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/6-1-定义-exchangeclient-抽象接口与统一结果结构.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>developer working on this trading bot</asA>
+    <iWant>a single, exchange-agnostic execution interface (ExchangeClient) with unified Entry/Close result shapes</iWant>
+    <soThat>the bot and strategy code do not care which concrete exchange backend is used</soThat>
+    <tasks>
+      - 任务 1：梳理当前执行路径与需求
+      - 任务 2：设计并实现 ExchangeClient 抽象接口
+      - 任务 3：定义统一的 EntryResult / CloseResult 结构
+      - 任务 4：为未来适配器与重构预留接入点
+      - 任务 5：最小验证与文档对齐
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - 定义包含 place_entry / close_position 的 ExchangeClient 抽象接口；
+    - 定义包含 success/backend/errors/raw 及可选 OID 字段的 EntryResult / CloseResult 结构；
+    - 不改变现有 Hyperliquid / Binance 执行行为，仅引入抽象与类型；
+    - 在 Dev Notes 中说明与 Epic 6、PRD 4.1/4.2 的映射关系。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - {"path": "docs/epics.md", "title": "Epic 6: 统一交易所执行层 &amp; 多交易所可插拔支持", "section": "Story 6.1", "snippet": "Story 6.1 要求定义 ExchangeClient 抽象接口与统一结果结构，为后续 Hyperliquid / Binance 适配做准备。"}
+      - {"path": "docs/prd.md", "title": "DeepSeek Paper Trading Bot PRD", "section": "4.1 交易主循环 &amp; 4.2 风险控制", "snippet": "描述交易主循环如何从 LLM 决策走到执行层，以及对风险控制与止损/止盈的约束，为 ExchangeClient 设计提供总体行为边界。"}
+      - {"path": "docs/architecture/03-data-flow.md", "title": "数据流", "section": "3.1 实时交易路径", "snippet": "说明从 Binance 行情、LLM 决策到 Hyperliquid 执行的完整链路，有助于确定 ExchangeClient 所处位置。"}
+      - {"path": "docs/architecture/04-integrations.md", "title": "外部依赖与集成点", "section": "Binance / Hyperliquid / LLM / Telegram", "snippet": "列出当前外部依赖与集成方式，强调通过环境变量配置外部服务。"}
+      - {"path": "docs/architecture/06-project-structure-and-mapping.md", "title": "项目结构与源码映射", "section": "6.2 PRD 功能块到架构组件的映射", "snippet": "将 PRD 中的交易主循环与 Hyperliquid 实盘集成映射到 bot.py / hyperliquid_client.py 等代码位置。"}
+      - {"path": "docs/architecture/07-implementation-patterns.md", "title": "实现模式与一致性规则", "section": "7.2/7.4/7.6", "snippet": "规定外部服务适配、错误处理与配置/密钥管理的模式，ExchangeClient 设计需要遵守这些约定。"}
+    </docs>
+    <code>
+      - {"path": "bot.py", "kind": "core_loop", "symbol": "execute_entry / execute_close", "lines": "(approx)", "reason": "主交易循环和执行入口，未来需要重构为依赖 ExchangeClient 抽象。"}
+      - {"path": "hyperliquid_client.py", "kind": "exchange_adapter", "symbol": "HyperliquidTradingClient", "lines": "(approx)", "reason": "当前 Hyperliquid 实盘执行封装，后续由 HyperliquidExchangeClient 包装并对接 ExchangeClient 抽象。"}
+      - {"path": "scripts/manual_hyperliquid_smoke.py", "kind": "smoke_test", "symbol": "main", "lines": "(approx)", "reason": "用于人工验证 Hyperliquid 连接与下单，对 ExchangeClient 适配后的连通性测试仍有参考价值。"}
+    </code>
+    <dependencies>
+      - {"ecosystem": "python", "manifest": "requirements.txt", "packages": [
+        "python-binance", "hyperliquid-python-sdk", "pandas", "numpy", "requests", "python-dotenv", "streamlit"
+      ]}
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - ExchangeClient 必须作为介于 bot.py 与具体交易所 SDK 之间的统一抽象层，避免在 bot.py 中直接散落 Hyperliquid/Binance 逻辑；
+    - 所有外部服务配置与密钥必须通过环境变量与集中配置处理，不在 ExchangeClient 内部直接读环境变量；
+    - 不允许在本 Story 中改变现有实盘或纸上交易行为，仅允许新增接口与类型定义；
+    - 新增代码需遵守实现模式文档中的命名、结构与错误处理约定。
+  </constraints>
+
+  <interfaces>
+    - ExchangeClient.place_entry(coin, side, size, entry_price, stop_loss_price, take_profit_price, leverage, liquidity, **kwargs)
+    - ExchangeClient.close_position(coin, side, size=None, fallback_price=None, **kwargs)
+    - EntryResult(success, backend, errors, entry_oid=None, tp_oid=None, sl_oid=None, raw=None, **extra)
+    - CloseResult(success, backend, errors, close_oid=None, raw=None, **extra)
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵守 PRD 中对风险控制与可观测性的要求：所有下单/错误路径需可从日志与 CSV/JSON 中追踪；
+      - 若未来引入自动化测试，推荐使用 pytest 并在 tests/ 目录下镜像源代码结构。
+    </standards>
+    <locations>
+      - 当前仓库尚未建立正式 tests/ 目录；建议未来在 tests/ 下新增与 ExchangeClient 相关的单元测试。 
+    </locations>
+    <ideas>
+      - 针对 AC #1/#2：为 ExchangeClient 的伪实现编写单元测试，验证方法签名和结果结构的类型契约；
+      - 针对 AC #3：构造模拟 Hyperliquid/Binance 响应，确认在不改变行为的前提下，EntryResult/CloseResult 能完整承载信息；
+      - 针对 AC #4：检查 Dev Notes 与架构文档中的映射是否保持一致，避免接口设计与文档描述偏离。
+    </ideas>
+  </tests>
+</story-context>

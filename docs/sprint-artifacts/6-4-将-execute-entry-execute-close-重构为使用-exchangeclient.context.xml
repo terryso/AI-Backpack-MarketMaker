@@ -1,0 +1,163 @@
+<story-context id="LLM-trader-test/story-6-4" v="1.0">
+  <metadata>
+    <epicId>6</epicId>
+    <storyId>4</storyId>
+    <title>将 execute_entry / execute_close 重构为使用 ExchangeClient</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-27T00:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/6-4-将-execute-entry-execute-close-重构为使用-exchangeclient.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>maintainer of the main trading loop</asA>
+    <iWant>execute_entry and execute_close to depend only on a unified ExchangeClient abstraction</iWant>
+    <soThat>adding or changing exchanges does not require editing core bot logic and risk rules</soThat>
+    <tasks>
+      - 梳理现有 execute_entry / execute_close 与持仓结构和风险约束
+      - 设计 ExchangeClient 注入与 backend 选择策略（TRADING_BACKEND × live 开关）
+      - 重构 execute_entry 使用 ExchangeClient 统一执行，并处理 EntryResult
+      - 重构 execute_close 使用 ExchangeClient 统一执行，并处理 CloseResult
+      - 扩展持仓结构与持久化结构，记录 live_backend 与各类 OID
+      - 通过单测与 Hyperliquid / Binance smoke 回归验证行为等价
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - AC1：execute_entry / execute_close 完全依赖 ExchangeClient 抽象，不再直接调用 HyperliquidTradingClient 或 ccxt Binance 客户端，paper 模式可通过兼容接口的模拟实现复用同一路径。
+    - AC2：依据 TRADING_BACKEND（hyperliquid / binance_futures / 未来扩展）与对应 live 开关（HYPERLIQUID_LIVE_TRADING、BINANCE_FUTURES_LIVE 等）构造或选择具体 ExchangeClient 实现，在配置缺失或 live 条件不满足时安全回退到 paper 行为并通过统一错误日志暴露问题。
+    - AC3：统一处理 ExchangeClient.place_entry / close_position 返回的 EntryResult / CloseResult：成功路径在 success=True 且 errors 为空/仅提示时继续，失败路径统一记录人类可读错误摘要，并在成功路径中将代表性 OID 写入持仓或内部记录结构。
+    - AC4：在现有持仓/组合结构中增加或规范 live_backend、entry_oid、tp_oid、sl_oid、close_oid 等字段，并保持与 Hyperliquid / Binance 现有路径及 CSV/JSON schema 的向后兼容。
+    - AC5：在仅 paper、Hyperliquid live、Binance Futures live 三类关键场景下，ENTRY/CLOSE 的数量、价格、PnL 与日志/错误语义与重构前等价（允许文案轻微差异）。
+    - AC6：在 Dev Notes 与实现中给出新增交易所最小接入 checklist：实现 ExchangeClient 接口、在工厂中增加 backend → 实现映射，并保证 EntryResult / CloseResult 的错误语义与现有 backend 一致，为 Story 6.5 的配置与文档工作做铺垫。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - path: docs/epics.md
+        title: Epic 6 - 统一交易所执行层 &amp; 多交易所可插拔支持
+        section: Story 6.4 - 将 execute_entry / execute_close 重构为使用 ExchangeClient
+        snippet: 描述通过 ExchangeClient 抽象将核心交易主循环与具体交易所解耦，使新增或切换 backend 时无需修改核心风控与执行逻辑。
+      - path: docs/PRD.md
+        title: DeepSeek Paper Trading Bot 产品需求文档
+        section: 4.1 交易主循环 / 4.2 风险控制与资金管理
+        snippet: 定义交易主循环节奏、LLM 决策校验与单笔风险/止损约束，为 execute_entry / execute_close 在重构后仍需遵守的全局规则提供基线。
+      - path: docs/architecture/03-data-flow.md
+        title: 架构 - 数据流
+        section: 3.1 实时交易路径
+        snippet: 描述从 Binance 行情与账户状态 → LLM 决策 → 执行层 → 持久化与可视化的数据流，是将执行层重构为 ExchangeClient 后必须保持不变的整体路径。
+      - path: docs/architecture/07-implementation-patterns.md
+        title: 架构 - 实现模式与一致性规则
+        section: 7.2 目录与代码结构 / 7.5 生命周期与错误处理模式
+        snippet: 约定 bot.py 作为唯一交易主循环入口、外部服务通过适配层封装以及统一的错误处理与日志模式，为 ExchangeClient 集成到 execute_entry / execute_close 提供结构与错误语义约束。
+    </docs>
+
+    <code>
+      - path: exchange_client.py
+        kind: service
+        symbol: ExchangeClient, HyperliquidExchangeClient, BinanceFuturesExchangeClient, get_exchange_client
+        lines: 1-120, 235-480
+        reason: 定义统一的交易执行抽象接口与结果结构，并提供 Hyperliquid/Binance Futures 的具体适配器与 backend → ExchangeClient 工厂，是 Story 6.4 重构 execute_entry / execute_close 时应优先复用的执行层入口。
+      - path: bot.py
+        kind: bot-main-loop
+        symbol: execute_entry, execute_close
+        lines: 1920-2334
+        reason: 当前交易主循环中的 ENTRY/CLOSE 实现与风险/仓位计算逻辑所在地，需要将其中针对 Hyperliquid / Binance 的分支重构为通过 ExchangeClient 调用，同时保持风控与日志语义不变。
+      - path: hyperliquid_client.py
+        kind: service
+        symbol: HyperliquidTradingClient
+        lines: 22-625
+        reason: Hyperliquid 实盘执行封装，负责杠杆设置、tick size 归一化与触发单，是 HyperliquidExchangeClient 组合与复用的底层客户端，对理解 backend 接口与错误模式有帮助。
+      - path: tests/test_exchange_client_hyperliquid.py
+        kind: test
+        symbol: HyperliquidExchangeClientTests
+        lines: 1-214
+        reason: 验证 HyperliquidExchangeClient 的 EntryResult / CloseResult 映射与错误聚合，为在 Story 6.4 中断言 execute_entry / execute_close 使用 ExchangeClient 后行为不变提供参考。
+      - path: tests/test_exchange_client_binance_futures.py
+        kind: test
+        symbol: BinanceFuturesExchangeClientTests
+        lines: 1-141
+        reason: 覆盖 BinanceFuturesExchangeClient 的成功与失败路径，确保 Binanace Futures 下单/平仓的错误语义和 OID 映射稳定，为重构后的 ENTRY/CLOSE 逻辑提供安全网。
+      - path: scripts/manual_hyperliquid_smoke.py
+        kind: smoke-script
+        symbol: run_smoke_test
+        lines: 1-419
+        reason: 手工 Hyperliquid smoke 测试脚本，可在 Story 6.4 完成后用于再次验证通过 ExchangeClient 的 Hyperliquid 路径行为等价。
+      - path: scripts/manual_binance_futures_smoke.py
+        kind: smoke-script
+        symbol: run_smoke_test, determine_order_params
+        lines: 1-376
+        reason: Binance Futures smoke 测试脚本，可通过 use_exchange_client 选项验证 ExchangeClient 适配层在真实环境中的 ENTRY/CLOSE 行为，为重构后回归提供依据。
+    </code>
+
+    <dependencies>
+      - ecosystem: python
+        manifests:
+          - path: requirements.txt
+        packages:
+          - name: python-binance
+            version: "1.0.19"
+          - name: pandas
+            version: "2.2.3"
+          - name: numpy
+            version: "2.1.3"
+          - name: requests
+            version: "2.31.0"
+          - name: python-dotenv
+            version: "1.0.0"
+          - name: colorama
+            version: "0.4.6"
+          - name: streamlit
+            version: "1.38.0"
+          - name: hyperliquid-python-sdk
+            version: ">=0.9.0"
+          - name: eth-account
+            version: ">=0.10.0"
+          - name: ccxt
+            version: "(see installed version)"
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - 必须遵守 PRD 4.2 中关于单笔风险、强制止损/止盈与退出规则的约束，重构后的 execute_entry / execute_close 不得绕过风险控制或更改风险含义。 
+    - ExchangeClient 接口只负责「如何执行」与「如何返回结果」，风险与仓位管理（quantity 计算、margin 限制、PnL 计算等）仍由 bot.py 负责。 
+    - 按 `docs/architecture/07-implementation-patterns.md`，bot.py 仍是唯一交易主循环入口，外部服务访问（Binance / Hyperliquid）需通过适配层，不能在核心逻辑中散落裸 SDK 调用。 
+    - 所有与实盘相关的错误必须以统一的错误语义通过 EntryResult / CloseResult.errors 暴露，同时在日志中给出简洁摘要，禁止只打印原始异常对象。
+  </constraints>
+
+  <interfaces>
+    - name: ExchangeClient.place_entry
+      kind: python-method
+      signature: "place_entry(coin: str, side: str, size: float, entry_price: Optional[float], stop_loss_price: Optional[float], take_profit_price: Optional[float], leverage: float, liquidity: str, **kwargs) -> EntryResult"
+      path: exchange_client.py
+    - name: ExchangeClient.close_position
+      kind: python-method
+      signature: "close_position(coin: str, side: str, size: Optional[float] = None, fallback_price: Optional[float] = None, **kwargs) -> CloseResult"
+      path: exchange_client.py
+    - name: get_exchange_client
+      kind: python-function
+      signature: "get_exchange_client(backend: str, **kwargs) -> ExchangeClient"
+      path: exchange_client.py
+    - name: HyperliquidTradingClient.place_entry_with_sl_tp
+      kind: python-method
+      signature: "place_entry_with_sl_tp(coin, side, size, entry_price, stop_loss_price, take_profit_price, leverage, liquidity) -> Dict[str, Any]"
+      path: hyperliquid_client.py
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵循 `docs/architecture/07-implementation-patterns.md` 中推荐的测试模式：优先为风险与执行路径、CSV/JSON 读写和外部集成添加单元测试或 smoke 测试。
+      - 针对 ExchangeClient 适配器已有单测，Story 6.4 重点是为 execute_entry / execute_close 集成 ExchangeClient 后的行为添加（或更新）测试。
+    </standards>
+    <locations>
+      - tests/
+      - scripts/manual_hyperliquid_smoke.py
+      - scripts/manual_binance_futures_smoke.py
+    </locations>
+    <ideas>
+      - 针对 AC1/AC2：为 execute_entry / execute_close 编写单测，使用 stub ExchangeClient 注入，验证在不同 TRADING_BACKEND / live 开关组合下选择了正确的 backend 并调用了期望的接口。 
+      - 针对 AC3/AC4：构造包含成功与失败 EntryResult / CloseResult 的 stub，验证持仓结构与日志中记录的 OID、backend、错误摘要符合预期。 
+      - 针对 AC5：在 paper / Hyperliquid / Binance 三条路径下，通过对比重构前后的 trade_history.csv / 日志片段，确认 ENTRY/CLOSE 行为等价。 
+    </ideas>
+  </tests>
+</story-context>

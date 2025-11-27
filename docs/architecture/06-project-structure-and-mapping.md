@@ -53,3 +53,8 @@ LLM-trader-test/
 | 非功能：可观测性（5.3） | `bot.py`, `dashboard.py`, `replay/` | `data/`, `data-backtest/` | Bot 在 CSV/JSON 中记录完整决策与状态，Dashboard 和 replay 站点负责可视化与回放，支撑「可观测性」需求。 |
 
 > 若后续在 PRD 中新增功能块（例如多账户、多策略调度、告警系统），应在本表中补充行，并在相应代码组件中实现对应的架构支撑。
+
+此外：
+
+- 交易 backend 与 live 模式的配置入口集中在根目录 `.env.example` 与 README 的「Trading Backends & Live Mode Configuration」小节。
+- 新增交易所适配器时，统一通过 `exchange_client.py` 中的 `ExchangeClient` 抽象与 `get_exchange_client` 工厂进行扩展，对应 Epic 6 / Story 6.1–6.5 的执行层设计。

@@ -1,0 +1,163 @@
+<story-context id="LLM-trader-test/story-6-5" v="1.0">
+  <metadata>
+    <epicId>6</epicId>
+    <storyId>5</storyId>
+    <title>统一配置语义并为未来交易所留扩展点</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-27T00:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/6-5-统一配置语义并为未来交易所留扩展点.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>power user or infra engineer</asA>
+    <iWant>a consistent configuration model for selecting trading backends and enabling live mode</iWant>
+    <soThat>switching or adding exchanges is predictable and low-risk</soThat>
+    <tasks>
+      - 梳理并记录现有 TRADING_BACKEND / HYPERLIQUID_LIVE_TRADING / BINANCE_FUTURES_LIVE 等配置的含义与默认行为。
+      - 在 .env.example 与 README 中统一这些变量的说明、默认值与安全提示，给出清晰的使用示例与推荐组合。
+      - 定义未来新增交易所适配器的最小接入规范（TRADING_BACKEND 枚举值、必需环境变量、ExchangeClient 实现与工厂挂接要求）。
+      - 在 PRD 与架构文档中增加交叉引用，标记 backend 配置入口与 ExchangeClient 扩展点，帮助后续 Story 快速定位相关代码和文档。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - AC1：在 .env.example 与 README 中，用统一的术语与结构清晰描述 TRADING_BACKEND 支持的值（paper / hyperliquid / binance_futures / &lt;future&gt;）、各 backend 所需的最小环境变量集合，以及 HYPERLIQUID_LIVE_TRADING / BINANCE_FUTURES_LIVE 等布尔开关的语义与安全默认行为。
+    - AC2：文档中新增「如何新增一个交易所适配器」小节，以 checklist 形式要求：约定新的 TRADING_BACKEND 值、在 .env.example 中增加对应 live 开关与 API 配置、实现 ExchangeClient 并在 get_exchange_client 工厂中挂接、复用统一的 EntryResult / CloseResult 字段与错误语义。
+    - AC3：在 README 或相关文档中给出 backend × live 配置矩阵（TRADING_BACKEND × live 开关），明确每种组合对应的行为（纯 paper、Hyperliquid 实盘、Binance Futures 实盘等）与关键风险提示。
+    - AC4：在 Story Dev Notes / PRD / 架构文档中增加最小的交叉引用，指向配置字段权威列表（.env.example）、用户向配置说明（README）以及执行层与配置位置（docs/architecture/04-integrations.md 与 06-project-structure-and-mapping.md），且不与现有描述矛盾。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - path: docs/epics.md
+        title: LLM-trader-test - Epic Breakdown
+        section: Story 6.5 - 统一配置语义并为未来交易所留扩展点
+        snippet: 定义 Epic 6 下的 Story 6.5，要求在配置与文档层面统一 TRADING_BACKEND 与各 backend live 开关的语义，并为未来交易所扩展提供最小接入规范。
+      - path: docs/prd.md
+        title: DeepSeek Paper Trading Bot 产品需求文档
+        section: 4.8 Hyperliquid 实盘集成 / 4.3 LLM 配置与 Prompt 管理
+        snippet: 描述默认纸上交易、开启 Hyperliquid 实盘的前置条件以及通过环境变量控制 LLM 与执行行为，为 live / paper 模式区分与安全默认行为提供产品级约束。
+      - path: docs/project-overview.md
+        title: DeepSeek Paper Trading Bot 项目总览
+        section: 2.2 场景（纸上交易 / Hyperliquid 实盘 / 回测）
+        snippet: 说明系统默认运行于纸上交易模式，仅在显式开启 HYPERLIQUID_LIVE_TRADING 且配置钱包与私钥时才触达真实资金，为配置矩阵中的「默认安全」设计提供背景。
+      - path: README.md
+        title: DeepSeek Paper Trading Bot README
+        section: Hyperliquid Live Trading (Optional)
+        snippet: 列出启用 Hyperliquid 实盘所需的环境变量与风险提示，并强调默认 paper 模式与回退行为，是对用户公开的 backend / live 配置说明入口。
+      - path: .env.example
+        title: 示例环境变量配置
+        section: Hyperliquid Live Trading / TRADING_BACKEND
+        snippet: 给出 TRADING_BACKEND、HYPERLIQUID_LIVE_TRADING、BINANCE_FUTURES_LIVE 及相关资金与风险变量的示例值，是 Story 6.5 要统一语义与注释的权威字段清单。
+      - path: docs/architecture/04-integrations.md
+        title: 架构 - 外部依赖与集成点
+        section: Binance / OpenRouter + DeepSeek / Hyperliquid / Telegram
+        snippet: 归纳各外部依赖与集成方式，并强调通过环境变量进行配置，是说明「backend 由配置驱动」的架构级文档入口。
+      - path: docs/architecture/06-project-structure-and-mapping.md
+        title: 架构 - 项目结构与 PRD 映射
+        section: 6. 项目结构与源码树
+        snippet: 罗列 bot.py、hyperliquid_client.py、docs/prd.md、.env.example 等关键文件位置，帮助在文档中精确指向 backend 配置入口与执行层扩展点。
+    </docs>
+
+    <code>
+      - path: bot.py
+        kind: bot-main-loop
+        symbol: TRADING_BACKEND parsing, HYPERLIQUID_LIVE_TRADING / BINANCE_FUTURES_LIVE gating, backend warnings
+        lines: 110-150, 2640-2652
+        reason: 在启动阶段解析 TRADING_BACKEND 与各 live 标志，并根据组合打印安全提示或回退到 paper 模式，是配置语义需要对齐的实际行为来源。
+      - path: exchange_client.py
+        kind: service
+        symbol: ExchangeClient, get_exchange_client
+        lines: 1-220, 300-480
+        reason: 定义统一的执行抽象与 backend → ExchangeClient 工厂，新交易所适配器必须在此实现并挂接，与 Story 6.5 中的「最小接入规范」直接相关。
+      - path: hyperliquid_client.py
+        kind: service
+        symbol: HyperliquidTradingClient
+        lines: 20-260
+        reason: 封装 Hyperliquid 实盘执行行为与所需环境变量，是文档中说明 Hyperliquid backend 行为与风险提示的重要代码依据。
+      - path: tests/test_exchange_client_hyperliquid.py
+        kind: test
+        symbol: HyperliquidExchangeClientTests
+        lines: 1-220
+        reason: 覆盖 HyperliquidExchangeClient 的 EntryResult / CloseResult 语义与错误聚合，有助于在新增 backend 规范中要求复用相同的返回结构与错误语义。
+      - path: tests/test_exchange_client_binance_futures.py
+        kind: test
+        symbol: BinanceFuturesExchangeClientTests
+        lines: 1-220
+        reason: 验证 Binance Futures 适配器在 TRADING_BACKEND="binance_futures" 且 BINANCE_FUTURES_LIVE=true 组合下的行为，为配置矩阵中该分支的语义提供测试支撑。
+      - path: scripts/manual_hyperliquid_smoke.py
+        kind: smoke-script
+        symbol: run_smoke_test
+        lines: 1-200
+        reason: 手工 Hyperliquid smoke 测试脚本，可作为 README 中「如何验证 Hyperliquid live 配置」部分的引用对象。
+      - path: scripts/manual_binance_futures_smoke.py
+        kind: smoke-script
+        symbol: run_smoke_test
+        lines: 1-220
+        reason: Binance Futures smoke 测试脚本，可在文档中用作「如何在 TRADING_BACKEND=binance_futures 组合下做最小实盘连通性验证」的示例。
+    </code>
+
+    <dependencies>
+      - ecosystem: python
+        manifests:
+          - path: requirements.txt
+        packages:
+          - name: python-binance
+            version: "1.0.19"
+          - name: pandas
+            version: "2.2.3"
+          - name: numpy
+            version: "2.1.3"
+          - name: requests
+            version: "2.31.0"
+          - name: python-dotenv
+            version: "1.0.0"
+          - name: colorama
+            version: "0.4.6"
+          - name: streamlit
+            version: "1.38.0"
+          - name: hyperliquid-python-sdk
+            version: ">=0.9.0"
+          - name: eth-account
+            version: ">=0.10.0"
+          - name: ccxt
+            version: "(see installed version)"
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - 所有与 TRADING_BACKEND / live 开关相关的文档描述必须与实际代码行为一致：默认使用 paper 模式，只有在显式开启相关 live 标志且配置必要凭证时才触达真实资金。
+    - 环境变量是 backend 选择与行为控制的唯一入口，代码中不得硬编码交易所凭证或将敏感信息写入版本库，文档应强化这一点。
+    - 新增交易所适配器必须实现 ExchangeClient 接口，并在 get_exchange_client 中挂接，同时遵守统一的 EntryResult / CloseResult 字段与错误语义，避免为单一 backend 引入特例字段。
+    - 对用户暴露的文档（README、project-overview、PRD）需要清晰警示 live 模式风险，并指出默认不会在未显式配置的情况下下真实单。
+  </constraints>
+
+  <interfaces>
+    - name: ExchangeClient
+      kind: python-protocol
+      signature: "class ExchangeClient(Protocol): place_entry(...)->EntryResult; close_position(...)->CloseResult"
+      path: exchange_client.py
+    - name: get_exchange_client
+      kind: python-function
+      signature: "get_exchange_client(backend: str, **kwargs) -> ExchangeClient"
+      path: exchange_client.py
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵循 docs/architecture/07-implementation-patterns.md 中关于测试与错误处理的一致性要求，对关键执行路径与集成点提供单测或 smoke 测试。
+      - 对任何新增 backend，至少需要：ExchangeClient 适配器单测 + 最小 smoke 测试脚本，复用现有 Hyperliquid / Binance Futures 测试模式。
+    </standards>
+    <locations>
+      - tests/
+      - scripts/manual_hyperliquid_smoke.py
+      - scripts/manual_binance_futures_smoke.py
+    </locations>
+    <ideas>
+      - 针对 AC1/AC3：为 bot.py 中的 TRADING_BACKEND / live 解析逻辑添加单测，验证在不同组合下的 START_CAPITAL 选择与日志提示语符合文档中的配置矩阵描述。
+      - 针对 AC2：为 ExchangeClient 工厂编写测试，确保为未来新增 backend 时必须在工厂中显式挂接，否则会返回安全的错误或回退行为，并在文档中写明这一约束。
+      - 针对 AC3/AC4：通过对 README 与 .env.example 的 snapshot 测试，检查关键字段与推荐组合未被意外删除或重命名，从而保持文档与实现的长期一致性。
+    </ideas>
+  </tests>
+</story-context>

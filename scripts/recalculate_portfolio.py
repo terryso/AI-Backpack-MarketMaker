@@ -149,9 +149,11 @@ class Position:
             "last_justification": self.entry_reason,
             "risk_usd": self.risk_usd,
             "wait_for_fill": False,
+            "live_backend": None,
             "entry_oid": -1,
             "tp_oid": -1,
             "sl_oid": -1,
+            "close_oid": -1,
         }
 
 

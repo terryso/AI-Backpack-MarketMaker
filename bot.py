@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 from colorama import Fore, Style, init as colorama_init
 
 from hyperliquid_client import HyperliquidTradingClient
+from exchange_client import CloseResult, EntryResult, get_exchange_client
 
 colorama_init(autoreset=True)
 
@@ -867,6 +868,11 @@ def load_state() -> None:
                     "liquidity": pos.get("liquidity", "taker"),
                     "entry_justification": pos.get("entry_justification", ""),
                     "last_justification": pos.get("last_justification", pos.get("entry_justification", "")),
+                    "live_backend": pos.get("live_backend"),
+                    "entry_oid": pos.get("entry_oid", -1),
+                    "tp_oid": pos.get("tp_oid", -1),
+                    "sl_oid": pos.get("sl_oid", -1),
+                    "close_oid": pos.get("close_oid", -1),
                 }
             positions = restored_positions
         logging.info(
@@ -1506,6 +1512,7 @@ def format_prompt_for_deepseek() -> str:
             "tp_oid": pos.get("tp_oid", -1),
             "wait_for_fill": pos.get("wait_for_fill", False),
             "entry_oid": pos.get("entry_oid", -1),
+            "live_backend": pos.get("live_backend"),
             "notional_usd": notional_value,
         }
         prompt_lines.append(f"{coin} position data: {json.dumps(position_payload)}")
@@ -2069,7 +2076,8 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
         )
         return
 
-    live_entry_receipt = None
+    entry_result: Optional[EntryResult] = None
+    live_backend: Optional[str] = None
     if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
         exchange = get_binance_futures_exchange()
         if not exchange:
@@ -2077,38 +2085,12 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
                 "Binance futures live trading enabled but client initialization failed; aborting entry.",
             )
             return
-        symbol = COIN_TO_SYMBOL.get(coin)
-        if not symbol:
-            logging.error("%s: No Binance symbol mapping found; aborting live entry.", coin)
-            return
-        order_side = "buy" if side == "long" else "sell"
         try:
-            try:
-                leverage_int = int(leverage)
-                exchange.set_leverage(leverage_int, symbol)
-            except Exception as exc:
-                logging.warning(
-                    "Failed to set leverage %s for %s on Binance futures: %s",
-                    leverage,
-                    symbol,
-                    exc,
-                )
-            params = {
-                "positionSide": "LONG" if side == "long" else "SHORT",
-            }
-            order = exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=order_side,
-                amount=quantity,
-                params=params,
-            )
-            live_entry_receipt = {"success": True, "order": order}
+            client = get_exchange_client("binance_futures", exchange=exchange)
         except Exception as exc:
-            logging.error("%s: Binance futures live entry failed: %s", coin, exc)
+            logging.error("%s: Failed to construct BinanceFuturesExchangeClient: %s", coin, exc)
             return
-    elif hyperliquid_trader.is_live:
-        live_entry_receipt = hyperliquid_trader.place_entry_with_sl_tp(
+        entry_result = client.place_entry(
             coin=coin,
             side=side,
             size=quantity,
@@ -2118,14 +2100,34 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
             leverage=leverage,
             liquidity=liquidity,
         )
-        if not live_entry_receipt.get("success"):
-            logging.error(
-                "%s: Live Hyperliquid entry rejected; aborting simulated entry. Response: %s",
-                coin,
-                live_entry_receipt.get("entry_result"),
-            )
+        if not entry_result.success:
+            joined_errors = "; ".join(entry_result.errors) if entry_result.errors else str(entry_result.raw)
+            logging.error("%s: Binance futures live entry failed: %s", coin, joined_errors)
             return
-    
+        live_backend = entry_result.backend
+    elif hyperliquid_trader.is_live:
+        try:
+            client = get_exchange_client("hyperliquid", trader=hyperliquid_trader)
+        except Exception as exc:
+            logging.error("%s: Failed to construct HyperliquidExchangeClient: %s", coin, exc)
+            logging.error("%s: Hyperliquid live trading will be skipped; proceeding in paper mode.", coin)
+        else:
+            entry_result = client.place_entry(
+                coin=coin,
+                side=side,
+                size=quantity,
+                entry_price=current_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=profit_target_price,
+                leverage=leverage,
+                liquidity=liquidity,
+            )
+            if not entry_result.success:
+                joined_errors = "; ".join(entry_result.errors) if entry_result.errors else str(entry_result.raw)
+                logging.error("%s: Hyperliquid live entry failed: %s", coin, joined_errors)
+                return
+            live_backend = entry_result.backend
+
     # Open position
     positions[coin] = {
         'side': side,
@@ -2142,17 +2144,13 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
         'liquidity': liquidity,
         'risk_usd': risk_usd,
         'wait_for_fill': decision.get('wait_for_fill', False),
-        'entry_oid': decision.get('entry_oid', -1),
-        'tp_oid': decision.get('tp_oid', -1),
-        'sl_oid': decision.get('sl_oid', -1),
+        'live_backend': live_backend,
+        'entry_oid': entry_result.entry_oid if entry_result else -1,
+        'tp_oid': entry_result.tp_oid if entry_result else -1,
+        'sl_oid': entry_result.sl_oid if entry_result else -1,
         'entry_justification': raw_reason,
         'last_justification': raw_reason,
     }
-    if hyperliquid_trader.is_live and live_entry_receipt:
-        positions[coin]['entry_oid'] = live_entry_receipt.get('entry_oid', positions[coin]['entry_oid'])
-        positions[coin]['tp_oid'] = live_entry_receipt.get('take_profit_oid', positions[coin]['tp_oid'])
-        positions[coin]['sl_oid'] = live_entry_receipt.get('stop_loss_oid', positions[coin]['sl_oid'])
-        positions[coin]['live_trading'] = True
     
     balance -= total_cost
     
@@ -2207,20 +2205,17 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
         line = f"  ├─ Estimated Fee: ${entry_fee:.2f} ({liquidity} @ {fee_rate*100:.4f}%)"
         print(line)
         record_iteration_message(line)
-    if hyperliquid_trader.is_live and live_entry_receipt:
-        entry_oid = live_entry_receipt.get("entry_oid")
-        if entry_oid is not None:
-            line = f"  ├─ Hyperliquid Entry OID: {entry_oid}"
+    if entry_result is not None:
+        if entry_result.entry_oid is not None:
+            line = f"  ├─ Live Entry OID ({entry_result.backend}): {entry_result.entry_oid}"
             print(line)
             record_iteration_message(line)
-        sl_oid = live_entry_receipt.get("stop_loss_oid")
-        if sl_oid is not None:
-            line = f"  ├─ Hyperliquid SL OID: {sl_oid}"
+        if entry_result.sl_oid is not None:
+            line = f"  ├─ Live SL OID ({entry_result.backend}): {entry_result.sl_oid}"
             print(line)
             record_iteration_message(line)
-        tp_oid = live_entry_receipt.get("take_profit_oid")
-        if tp_oid is not None:
-            line = f"  ├─ Hyperliquid TP OID: {tp_oid}"
+        if entry_result.tp_oid is not None:
+            line = f"  ├─ Live TP OID ({entry_result.backend}): {entry_result.tp_oid}"
             print(line)
             record_iteration_message(line)
     line = f"  ├─ Confidence: {decision.get('confidence', 0)*100:.0f}%"
@@ -2308,7 +2303,7 @@ def execute_close(coin: str, decision: Dict[str, Any], current_price: float) -> 
     total_fees = pos.get('fees_paid', 0.0) + exit_fee
     net_pnl = pnl - total_fees
 
-    live_close_receipt = None
+    close_result: Optional[CloseResult] = None
     if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
         exchange = get_binance_futures_exchange()
         if not exchange:
@@ -2320,36 +2315,38 @@ def execute_close(coin: str, decision: Dict[str, Any], current_price: float) -> 
         if not symbol:
             logging.error("%s: No Binance symbol mapping found; position remains open.", coin)
             return
-        order_side = "sell" if pos['side'] == "long" else "buy"
         try:
-            params = {
-                "reduceOnly": True,
-                "positionSide": "LONG" if pos['side'] == "long" else "SHORT",
-            }
-            order = exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=order_side,
-                amount=pos['quantity'],
-                params=params,
-            )
-            live_close_receipt = {"success": True, "order": order}
+            client = get_exchange_client("binance_futures", exchange=exchange)
         except Exception as exc:
-            logging.error("%s: Binance futures live close failed: %s", coin, exc)
+            logging.error("%s: Failed to construct BinanceFuturesExchangeClient for close: %s", coin, exc)
+            return
+        close_result = client.close_position(
+            coin=coin,
+            side=pos['side'],
+            size=pos['quantity'],
+            fallback_price=current_price,
+            symbol=symbol,
+        )
+        if not close_result.success:
+            joined_errors = "; ".join(close_result.errors) if close_result.errors else str(close_result.raw)
+            logging.error("%s: Binance futures live close failed; position remains open. %s", coin, joined_errors)
             return
     elif hyperliquid_trader.is_live:
-        live_close_receipt = hyperliquid_trader.close_position(
+        try:
+            client = get_exchange_client("hyperliquid", trader=hyperliquid_trader)
+        except Exception as exc:
+            logging.error("%s: Failed to construct HyperliquidExchangeClient for close: %s", coin, exc)
+            logging.error("%s: Hyperliquid live close will be skipped; position remains open in paper state.", coin)
+            return
+        close_result = client.close_position(
             coin=coin,
             side=pos['side'],
             size=pos['quantity'],
             fallback_price=current_price,
         )
-        if not live_close_receipt.get("success"):
-            logging.error(
-                "%s: Live Hyperliquid close rejected; position remains open. Response: %s",
-                coin,
-                live_close_receipt.get("close_result"),
-            )
+        if not close_result.success:
+            joined_errors = "; ".join(close_result.errors) if close_result.errors else str(close_result.raw)
+            logging.error("%s: Hyperliquid live close failed; position remains open. %s", coin, joined_errors)
             return
     
     # Return margin and add net PnL (after fees)
@@ -2366,12 +2363,10 @@ def execute_close(coin: str, decision: Dict[str, Any], current_price: float) -> 
         line = f"  ├─ Fees Paid: ${total_fees:.2f} (includes exit fee ${exit_fee:.2f})"
         print(line)
         record_iteration_message(line)
-    if hyperliquid_trader.is_live and live_close_receipt:
-        close_oid = live_close_receipt.get("close_oid")
-        if close_oid is not None:
-            line = f"  ├─ Hyperliquid Close OID: {close_oid}"
-            print(line)
-            record_iteration_message(line)
+    if close_result is not None and close_result.close_oid is not None:
+        line = f"  ├─ Live Close OID ({close_result.backend}): {close_result.close_oid}"
+        print(line)
+        record_iteration_message(line)
     line = f"  ├─ Net PnL: ${net_pnl:.2f}"
     print(line)
     record_iteration_message(line)

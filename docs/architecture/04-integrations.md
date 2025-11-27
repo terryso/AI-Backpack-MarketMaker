@@ -10,4 +10,5 @@
 - **Telegram**：
   - 作为运维与信号通知渠道。
 
-集成方式：均通过环境变量进行配置，避免硬编码密钥与敏感信息。
+集成方式：均通过环境变量进行配置，避免硬编码密钥与敏感信息；
+对于交易 backend 与实盘开关，统一入口为根目录 `.env.example` 与 README 中的「Trading Backends & Live Mode Configuration」小节。
