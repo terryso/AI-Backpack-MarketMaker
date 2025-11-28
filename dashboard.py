@@ -77,7 +77,28 @@ else:
 
 
 def load_csv(path: Path, parse_dates: List[str] | None = None) -> pd.DataFrame:
-    """Load a CSV into a DataFrame, returning empty frame when missing."""
+    """Load a CSV into a DataFrame.
+
+    If TRADEBOT_DATA_BASE_URL is set, attempt to load from that HTTP base URL first,
+    falling back to the local filesystem path when remote loading fails or is
+    unavailable. When neither source provides data, return an empty frame.
+    """
+
+    remote_base = (os.getenv("TRADEBOT_DATA_BASE_URL") or "").strip()
+    if remote_base:
+        remote_base = remote_base.rstrip("/")
+        remote_url = f"{remote_base}/{path.name}"
+        try:
+            return pd.read_csv(remote_url, parse_dates=parse_dates)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "Failed to load %s from remote %s: %s; falling back to local %s",
+                path.name,
+                remote_url,
+                exc,
+                path,
+            )
+
     if not path.exists():
         return pd.DataFrame()
     return pd.read_csv(path, parse_dates=parse_dates)

@@ -11,3 +11,4 @@ patreon/
 medium/
 data-backtest/
 .coverage
+sync_surge.sh
