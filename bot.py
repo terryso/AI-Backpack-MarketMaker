@@ -211,14 +211,16 @@ IS_LIVE_BACKEND = (
 START_CAPITAL = LIVE_START_CAPITAL if IS_LIVE_BACKEND else PAPER_START_CAPITAL
 
 # Trading symbols to monitor
-SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT"]
+SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT", "PAXGUSDT", "PUMPUSDT"]
 SYMBOL_TO_COIN = {
     "ETHUSDT": "ETH",
     "SOLUSDT": "SOL", 
     "XRPUSDT": "XRP",
     "BTCUSDT": "BTC",
     "DOGEUSDT": "DOGE",
-    "BNBUSDT": "BNB"
+    "BNBUSDT": "BNB",
+    "PAXGUSDT": "PAXG",
+    "PUMPUSDT": "PUMP"
 }
 COIN_TO_SYMBOL = {coin: symbol for symbol, coin in SYMBOL_TO_COIN.items()}
 
@@ -1676,6 +1678,36 @@ def _recover_partial_decisions(json_str: str) -> Optional[Tuple[Dict[str, Any], 
     return recovered, missing
 
 
+def _log_llm_decisions(decisions: Dict[str, Any]) -> None:
+    """Log a compact, human-readable summary of LLM decisions for all coins."""
+    try:
+        parts: List[str] = []
+        for coin, raw_decision in decisions.items():
+            if not isinstance(raw_decision, dict):
+                continue
+            decision = raw_decision
+            signal = str(decision.get("signal", "hold")).lower()
+            side = str(decision.get("side", "")).lower()
+            quantity = decision.get("quantity")
+            tp = decision.get("profit_target")
+            sl = decision.get("stop_loss")
+            confidence = decision.get("confidence")
+
+            if signal == "entry":
+                parts.append(
+                    f"{coin}: ENTRY {side or '-'} qty={quantity} tp={tp} sl={sl} conf={confidence}"
+                )
+            elif signal == "close":
+                parts.append(f"{coin}: CLOSE {side or '-'}")
+            else:
+                parts.append(f"{coin}: HOLD")
+
+        if parts:
+            logging.info("LLM decisions: %s", " | ".join(parts))
+    except Exception:
+        logging.exception("Failed to log LLM decisions")
+
+
 def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
     """Call OpenRouter API with DeepSeek Chat V3.1."""
     api_key = LLM_API_KEY
@@ -1735,7 +1767,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
             url=LLM_API_BASE_URL,
             headers=headers,
             json=request_payload,
-            timeout=30,
+            timeout=90,
         )
 
         if response.status_code != 200:
@@ -1783,6 +1815,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
             json_str = content[start:end]
             try:
                 decisions = json.loads(json_str)
+                _log_llm_decisions(decisions)
                 return decisions
             except json.JSONDecodeError as decode_err:
                 recovery = _recover_partial_decisions(json_str)
@@ -1812,6 +1845,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                         },
                         log_error=False,
                     )
+                    _log_llm_decisions(decisions)
                     return decisions
                 snippet = json_str[:2000]
                 notify_error(

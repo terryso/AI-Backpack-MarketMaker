@@ -6,6 +6,7 @@ import logging
 import time
 
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, List, Optional, Protocol, TYPE_CHECKING, runtime_checkable
 
 import requests
@@ -564,6 +565,38 @@ class BackpackFuturesExchangeClient:
             "Content-Type": "application/json; charset=utf-8",
         }
 
+    def _get_market_filters(self, symbol: str) -> Optional[Dict[str, Any]]:
+        cache = getattr(self, "_markets_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_markets_cache", cache)
+
+        if symbol in cache:
+            return cache[symbol]
+
+        url = f"{self._base_url}/api/v1/markets"
+        try:
+            response = self._session.get(url, timeout=self._timeout)
+            data = response.json()
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Backpack markets request failed: %s", exc)
+            return None
+
+        if not isinstance(data, list):
+            return None
+
+        selected: Optional[Dict[str, Any]] = None
+        for item in data:
+            if isinstance(item, dict) and item.get("symbol") == symbol:
+                filters = item.get("filters")
+                if isinstance(filters, dict):
+                    selected = filters
+                break
+
+        if selected is not None:
+            cache[symbol] = selected
+        return selected
+
     @staticmethod
     def _deduplicate_errors(errors: List[str]) -> List[str]:
         seen: Dict[str, None] = {}
@@ -572,8 +605,7 @@ class BackpackFuturesExchangeClient:
                 seen[item] = None
         return list(seen.keys())
 
-    @staticmethod
-    def _format_quantity(size: float) -> str:
+    def _format_quantity(self, symbol: str, size: float) -> str:
         """Format order quantity with a safe number of decimal places.
 
         Backpack will reject orders when the quantity has too many decimal
@@ -586,10 +618,46 @@ class BackpackFuturesExchangeClient:
         if size <= 0:
             raise ValueError("Order quantity must be positive.")
 
-        qty_str = f"{size:.4f}"
+        min_qty: Optional[Decimal] = None
+        step: Optional[Decimal] = None
+
+        filters = self._get_market_filters(symbol)
+        if filters is not None:
+            quantity_filters = filters.get("quantity")
+            if isinstance(quantity_filters, dict):
+                step_str = quantity_filters.get("stepSize")
+                min_str = quantity_filters.get("minQuantity")
+                if isinstance(step_str, str):
+                    try:
+                        step = Decimal(step_str)
+                    except Exception:  # noqa: BLE001
+                        step = None
+                if isinstance(min_str, str):
+                    try:
+                        min_qty = Decimal(min_str)
+                    except Exception:  # noqa: BLE001
+                        min_qty = None
+
+        if step is not None and step > 0:
+            size_dec = Decimal(str(size))
+            units = (size_dec / step).to_integral_value(rounding=ROUND_DOWN)
+            qty_dec = units * step
+            if qty_dec <= 0 and min_qty is not None and min_qty > 0:
+                qty_dec = min_qty
+            exponent = qty_dec.as_tuple().exponent
+            decimals = -exponent if exponent < 0 else 0
+            decimals = min(decimals, 8)
+            fmt = "{0:." + str(decimals) + "f}"
+            qty_str = fmt.format(qty_dec)
+        else:
+            qty_str = f"{size:.4f}"
+
         qty_str = qty_str.rstrip("0").rstrip(".")
         if not qty_str or qty_str == "0":
-            qty_str = "0.0001"
+            if min_qty is not None and min_qty > 0:
+                qty_str = str(min_qty)
+            else:
+                qty_str = "0.0001"
         return qty_str
 
     @staticmethod
@@ -666,7 +734,7 @@ class BackpackFuturesExchangeClient:
         symbol = self._coin_to_symbol(coin)
         side_normalized = (side or "").lower()
         order_side = "Bid" if side_normalized == "long" else "Ask"
-        quantity_str = self._format_quantity(size)
+        quantity_str = self._format_quantity(symbol, size)
         body: Dict[str, Any] = {
             "symbol": symbol,
             "side": order_side,
@@ -720,7 +788,7 @@ class BackpackFuturesExchangeClient:
         symbol = self._coin_to_symbol(coin)
         side_normalized = (side or "").lower()
         order_side = "Ask" if side_normalized == "long" else "Bid"
-        quantity_str = self._format_quantity(quantity)
+        quantity_str = self._format_quantity(symbol, quantity)
         body: Dict[str, Any] = {
             "symbol": symbol,
             "side": order_side,

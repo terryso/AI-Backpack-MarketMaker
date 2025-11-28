@@ -477,6 +477,24 @@ def main() -> None:
         bot.log_system_prompt_info("Backtest system prompt")
         print(f"System prompt for this backtest: {bot.describe_system_prompt_source()}")
 
+    backtest_symbols_raw = os.getenv("BACKTEST_SYMBOLS")
+    if backtest_symbols_raw:
+        desired_symbols = []
+        for item in backtest_symbols_raw.split(","):
+            token = item.strip()
+            if not token:
+                continue
+            token_upper = token.upper()
+            if hasattr(bot, "COIN_TO_SYMBOL") and token_upper in bot.COIN_TO_SYMBOL:
+                desired_symbols.append(bot.COIN_TO_SYMBOL[token_upper])
+            else:
+                if not token_upper.endswith("USDT"):
+                    token_upper = f"{token_upper}USDT"
+                desired_symbols.append(token_upper)
+        if desired_symbols:
+            logging.info("Overriding bot.SYMBOLS for backtest: %s", desired_symbols)
+            bot.SYMBOLS = desired_symbols
+
     if getattr(bot, "INTERVAL", None) != cfg.interval:
         logging.info("Aligning bot interval with backtest interval: %s → %s", getattr(bot, "INTERVAL", None), cfg.interval)
         bot.INTERVAL = cfg.interval
@@ -576,7 +594,10 @@ def main() -> None:
             "interval": cfg.interval,
             "bars": len(timeline),
         },
-        "symbols": list(bot.SYMBOL_TO_COIN.values()),
+        "symbols": [
+            bot.SYMBOL_TO_COIN.get(symbol, symbol)
+            for symbol in getattr(bot, "SYMBOLS", [])
+        ],
         "capital": {
             "start": bot.START_CAPITAL,
             "final_balance": bot.balance,

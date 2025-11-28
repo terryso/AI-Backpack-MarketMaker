@@ -101,6 +101,16 @@ If DeepSeek responds with `hold`, the bot still records unrealised PnL, accumula
 
 Need to iterate on the playbook? Set `TRADEBOT_SYSTEM_PROMPT` directly in `.env`, or point `TRADEBOT_SYSTEM_PROMPT_FILE` at a text file to swap the default rules. The backtester honours `BACKTEST_SYSTEM_PROMPT` and `BACKTEST_SYSTEM_PROMPT_FILE` so you can trial alternative prompts without touching live settings.
 
+## LLM Provider Configuration (OpenAI-compatible)
+
+By default the bot talks to DeepSeek via OpenRouter, but you can point it at **any OpenAI Chat Completions–compatible endpoint** by setting:
+
+- `LLM_API_BASE_URL` – e.g. `https://openrouter.ai/api/v1/chat/completions`, `https://api.openai.com/v1/chat/completions`, or your own gateway.
+- `LLM_API_KEY` – API key or token for that provider.
+- `LLM_API_TYPE` – optional hint (`openrouter`, `openai`, `azure`, `custom`) that influences HTTP headers and logging.
+
+If these variables are not set, the bot falls back to `OPENROUTER_API_KEY` and the default OpenRouter endpoint. See `.env.example` for complete examples, including backtest-only overrides (`BACKTEST_LLM_API_BASE_URL`, `BACKTEST_LLM_API_KEY`, `BACKTEST_LLM_API_TYPE`).
+
 ## Telegram Notifications
 Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to receive a message after every iteration. The notification mirrors the console output (positions opened/closed, portfolio summary, and any warnings) so you can follow progress without tailing logs.
 
@@ -124,11 +134,14 @@ By default the Sortino ratio assumes a 0% risk-free rate. Override it by definin
 ## Prerequisites
 
 - Docker 24+ (any engine capable of building Linux/AMD64 images)
-- A `.env` file with the required API credentials:
-  - `BN_API_KEY` / `BN_SECRET` for Binance access
-  - `OPENROUTER_API_KEY` for DeepSeek requests
-  - Optional: `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for push notifications
-  - Optional: Hyperliquid live-trading variables (see below)
+- A `.env` file with the required credentials:
+  - `BN_API_KEY` / `BN_SECRET` (or `BINANCE_API_KEY` / `BINANCE_API_SECRET`) for Binance market data and Binance USDT-margined futures.
+  - LLM provider configuration:
+    - `OPENROUTER_API_KEY` for the default OpenRouter + DeepSeek setup; or
+    - `LLM_API_BASE_URL` + `LLM_API_KEY` (+ optional `LLM_API_TYPE`) for any OpenAI-compatible LLM provider.
+  - Optional: `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for push notifications.
+  - Optional: Hyperliquid live-trading variables (see below).
+  - Optional: Backpack futures live-trading variables (`BACKPACK_API_PUBLIC_KEY`, `BACKPACK_API_SECRET_SEED`).
 
 ## Hyperliquid Live Trading (Optional)
 
@@ -153,15 +166,17 @@ The bot separates **backend selection** from **live-mode switches**. All behavio
   - `paper` (default) → paper trading only.
   - `hyperliquid` → you intend to use Hyperliquid as the live backend.
   - `binance_futures` → you intend to use Binance USDT-margined futures as the live backend.
-- `HYPERLIQUID_LIVE_TRADING` is the master flag for sending live orders to Hyperliquid. When this is `true` and the SDK/credentials are valid, Hyperliquid live execution is enabled regardless of `TRADING_BACKEND`.
-- `BINANCE_FUTURES_LIVE` is the master flag for sending live orders to Binance USDT-margined futures. It is only consulted when `TRADING_BACKEND=binance_futures`.
+  - `backpack_futures` → you intend to use Backpack USDC perpetual futures as the live backend.
+- `LIVE_TRADING_ENABLED` is an optional global master switch. When set to `true`, the bot enables live trading for the selected non-`paper` backend (Hyperliquid, Binance futures, or Backpack futures) provided the required credentials are configured.
+- `HYPERLIQUID_LIVE_TRADING` is the per-backend flag for sending live orders to Hyperliquid when `LIVE_TRADING_ENABLED` is **not** set. It is only honoured when `TRADING_BACKEND=hyperliquid`.
+- `BINANCE_FUTURES_LIVE` is the per-backend flag for sending live orders to Binance USDT-margined futures when `LIVE_TRADING_ENABLED` is **not** set, and only when `TRADING_BACKEND=binance_futures`.
 
 Safe defaults:
 
 - If `TRADING_BACKEND` is unset or invalid, the bot falls back to `paper`.
-- Both live flags default to `false`, so a fresh checkout always runs in paper mode only.
+- `LIVE_TRADING_ENABLED`, `HYPERLIQUID_LIVE_TRADING`, and `BINANCE_FUTURES_LIVE` all default to `false`, so a fresh checkout always runs in paper mode only.
 
-### Backend × Live-mode Matrix (Current Implementation)
+### Backend × Live-mode Matrix (when `LIVE_TRADING_ENABLED` is unset)
 
 | TRADING_BACKEND   | HYPERLIQUID_LIVE_TRADING | BINANCE_FUTURES_LIVE | Effective behavior |
 |-------------------|--------------------------|-----------------------|--------------------|
@@ -170,7 +185,7 @@ Safe defaults:
 | `binance_futures` | `false`                  | `false`               | Paper trading only; Binance risk caps are parsed but no live orders are sent. |
 | `binance_futures` | `false`                  | `true`                | Live orders go to Binance USDT-margined futures via `BinanceFuturesExchangeClient`; margin/risk limits enforced. |
 
-> 推荐做法：一次只开启一个实盘 backend。若你希望使用 Hyperliquid 实盘，请将 `TRADING_BACKEND=hyperliquid` 且仅设置 `HYPERLIQUID_LIVE_TRADING=true`；若使用 Binance Futures 实盘，请将 `TRADING_BACKEND=binance_futures` 且仅设置 `BINANCE_FUTURES_LIVE=true`。
+> 推荐做法：一次只开启一个实盘 backend。最简单的方式是设置 `TRADING_BACKEND=hyperliquid|binance_futures|backpack_futures` 并将 `LIVE_TRADING_ENABLED=true`。如果你更喜欢沿用每个 backend 自己的开关，在 **未设置** `LIVE_TRADING_ENABLED` 时，可以使用 `TRADING_BACKEND=hyperliquid` + `HYPERLIQUID_LIVE_TRADING=true` 或 `TRADING_BACKEND=binance_futures` + `BINANCE_FUTURES_LIVE=true`。
 
 #### Hyperliquid live configuration (summary)
 
@@ -192,6 +207,15 @@ Safe defaults:
   - `BINANCE_FUTURES_MAX_LEVERAGE` set to a sane leverage ceiling.
   - Optional: `BINANCE_FUTURES_MAX_MARGIN_USD` to cap margin per position (0.0 = no extra cap).
 - A small live smoke-test is available in `scripts/manual_binance_futures_smoke.py`.
+
+#### Backpack Futures live configuration (summary)
+
+- Recommended for Backpack USDC perpetual futures:
+  - `TRADING_BACKEND=backpack_futures`
+  - `LIVE_TRADING_ENABLED=true`
+  - `BACKPACK_API_PUBLIC_KEY` / `BACKPACK_API_SECRET_SEED` configured (base64-encoded ED25519 keys; see the official Backpack Exchange API documentation).
+  - Optional overrides: `BACKPACK_API_BASE_URL`, `BACKPACK_API_WINDOW_MS`.
+- A small live smoke-test is available in `scripts/manual_backpack_futures_smoke.py`.
 
 ## Build the Image
 
@@ -269,6 +293,7 @@ Add any of the following keys to your `.env` when running a backtest (all are op
 - `BACKTEST_START` / `BACKTEST_END` – UTC timestamps (`2024-01-01T00:00:00Z` format) that define the evaluation window
 - `BACKTEST_INTERVAL` – primary bar size (`3m` by default); a 4h context stream is fetched automatically
 - `BACKTEST_LLM_MODEL`, `BACKTEST_TEMPERATURE`, `BACKTEST_MAX_TOKENS`, `BACKTEST_LLM_THINKING`, `BACKTEST_SYSTEM_PROMPT`, `BACKTEST_SYSTEM_PROMPT_FILE` – override the model, sampling parameters, and system prompt without touching your live settings
+- Optional LLM endpoint overrides used only during backtests: `BACKTEST_LLM_API_BASE_URL`, `BACKTEST_LLM_API_KEY`, `BACKTEST_LLM_API_TYPE`.
 - `BACKTEST_START_CAPITAL` – initial equity used for balance/equity calculations
 - `BACKTEST_DISABLE_TELEGRAM` – set to `true` to silence notifications during the simulation
 
