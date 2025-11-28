@@ -41,13 +41,37 @@ def _parse_float_env(value: Optional[str], default: float) -> float:
 
 
 def detect_starting_capital() -> float:
-    hyperliquid_live = _parse_bool_env(
+    trading_backend_raw = os.getenv("TRADING_BACKEND") or ""
+    trading_backend = trading_backend_raw.strip().lower()
+
+    live_flag_raw = os.getenv("LIVE_TRADING_ENABLED")
+    live_flag = (
+        _parse_bool_env(live_flag_raw, default=False)
+        if live_flag_raw is not None
+        else None
+    )
+
+    hyperliquid_live_env = _parse_bool_env(
         os.getenv("HYPERLIQUID_LIVE_TRADING"),
         default=False,
     )
+    binance_futures_live_env = _parse_bool_env(
+        os.getenv("BINANCE_FUTURES_LIVE"),
+        default=False,
+    )
+
     paper_start = _parse_float_env(os.getenv("PAPER_START_CAPITAL"), 10_000.0)
     hyper_start = _parse_float_env(os.getenv("HYPERLIQUID_CAPITAL"), 500.0)
-    return hyper_start if hyperliquid_live else paper_start
+    live_start = _parse_float_env(os.getenv("LIVE_START_CAPITAL"), hyper_start)
+
+    if live_flag is not None:
+        is_live_backend = live_flag and trading_backend in {"hyperliquid", "binance_futures"}
+    else:
+        is_live_backend = hyperliquid_live_env or (
+            trading_backend == "binance_futures" and binance_futures_live_env
+        )
+
+    return live_start if is_live_backend else paper_start
 
 
 def extract_fee(reason: str) -> float:

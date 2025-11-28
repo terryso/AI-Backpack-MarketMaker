@@ -112,10 +112,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_SIGNALS_CHAT_ID = os.getenv("TELEGRAM_SIGNALS_CHAT_ID", "")
 
-HYPERLIQUID_LIVE_TRADING = _parse_bool_env(
-    os.getenv("HYPERLIQUID_LIVE_TRADING"),
-    default=False,
-)
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
 HYPERLIQUID_PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
 
@@ -128,8 +124,6 @@ HYPERLIQUID_CAPITAL = _parse_float_env(
     default=500.0,
 )
 
-START_CAPITAL = HYPERLIQUID_CAPITAL if HYPERLIQUID_LIVE_TRADING else PAPER_START_CAPITAL
-
 _TRADING_BACKEND_RAW = os.getenv("TRADING_BACKEND")
 if _TRADING_BACKEND_RAW:
     TRADING_BACKEND = _TRADING_BACKEND_RAW.strip().lower() or "paper"
@@ -141,10 +135,27 @@ if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures"}:
     )
     TRADING_BACKEND = "paper"
 
-BINANCE_FUTURES_LIVE = _parse_bool_env(
-    os.getenv("BINANCE_FUTURES_LIVE"),
-    default=False,
-)
+_LIVE_TRADING_ENV = os.getenv("LIVE_TRADING_ENABLED")
+if _LIVE_TRADING_ENV is not None:
+    LIVE_TRADING_ENABLED = _parse_bool_env(_LIVE_TRADING_ENV, default=False)
+else:
+    LIVE_TRADING_ENABLED = None
+
+if LIVE_TRADING_ENABLED is not None:
+    HYPERLIQUID_LIVE_TRADING = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "hyperliquid")
+else:
+    HYPERLIQUID_LIVE_TRADING = _parse_bool_env(
+        os.getenv("HYPERLIQUID_LIVE_TRADING"),
+        default=False,
+    )
+
+if LIVE_TRADING_ENABLED is not None:
+    BINANCE_FUTURES_LIVE = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "binance_futures")
+else:
+    BINANCE_FUTURES_LIVE = _parse_bool_env(
+        os.getenv("BINANCE_FUTURES_LIVE"),
+        default=False,
+    )
 BINANCE_FUTURES_MAX_RISK_USD = _parse_float_env(
     os.getenv("BINANCE_FUTURES_MAX_RISK_USD"),
     default=100.0,
@@ -158,6 +169,31 @@ BINANCE_FUTURES_MAX_MARGIN_USD = _parse_float_env(
     os.getenv("BINANCE_FUTURES_MAX_MARGIN_USD"),
     default=0.0,
 )
+
+LIVE_START_CAPITAL = _parse_float_env(
+    os.getenv("LIVE_START_CAPITAL"),
+    default=HYPERLIQUID_CAPITAL,
+)
+
+LIVE_MAX_RISK_USD = _parse_float_env(
+    os.getenv("LIVE_MAX_RISK_USD"),
+    default=BINANCE_FUTURES_MAX_RISK_USD,
+)
+LIVE_MAX_LEVERAGE = _parse_float_env(
+    os.getenv("LIVE_MAX_LEVERAGE"),
+    default=BINANCE_FUTURES_MAX_LEVERAGE,
+)
+LIVE_MAX_MARGIN_USD = _parse_float_env(
+    os.getenv("LIVE_MAX_MARGIN_USD"),
+    default=BINANCE_FUTURES_MAX_MARGIN_USD,
+)
+
+IS_LIVE_BACKEND = (
+    (TRADING_BACKEND == "hyperliquid" and HYPERLIQUID_LIVE_TRADING)
+    or (TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE)
+)
+
+START_CAPITAL = LIVE_START_CAPITAL if IS_LIVE_BACKEND else PAPER_START_CAPITAL
 
 # Trading symbols to monitor
 SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT"]
@@ -1968,11 +2004,11 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
         logging.warning(f"{coin}: Invalid risk_usd '%s'; defaulting to 1%% of balance.", risk_usd_raw)
         risk_usd = balance * 0.01
 
-    if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
-        if leverage > BINANCE_FUTURES_MAX_LEVERAGE:
-            leverage = BINANCE_FUTURES_MAX_LEVERAGE
-        if risk_usd > BINANCE_FUTURES_MAX_RISK_USD:
-            risk_usd = BINANCE_FUTURES_MAX_RISK_USD
+    if IS_LIVE_BACKEND:
+        if LIVE_MAX_LEVERAGE > 0 and leverage > LIVE_MAX_LEVERAGE:
+            leverage = LIVE_MAX_LEVERAGE
+        if LIVE_MAX_RISK_USD > 0 and risk_usd > LIVE_MAX_RISK_USD:
+            risk_usd = LIVE_MAX_RISK_USD
 
     leverage_display = format_leverage_display(leverage)
 
@@ -2037,18 +2073,17 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
     margin_required = position_value / leverage if leverage else position_value
 
     if (
-        TRADING_BACKEND == "binance_futures"
-        and BINANCE_FUTURES_LIVE
-        and BINANCE_FUTURES_MAX_MARGIN_USD > 0
-        and margin_required > BINANCE_FUTURES_MAX_MARGIN_USD
+        IS_LIVE_BACKEND
+        and LIVE_MAX_MARGIN_USD > 0
+        and margin_required > LIVE_MAX_MARGIN_USD
     ):
         logging.info(
-            "%s: Margin %.2f exceeds max Binance futures margin %.2f; scaling position down.",
+            "%s: Margin %.2f exceeds live margin cap %.2f; scaling position down.",
             coin,
             margin_required,
-            BINANCE_FUTURES_MAX_MARGIN_USD,
+            LIVE_MAX_MARGIN_USD,
         )
-        margin_required = BINANCE_FUTURES_MAX_MARGIN_USD
+        margin_required = LIVE_MAX_MARGIN_USD
         position_value = margin_required * leverage
         quantity = position_value / current_price
         # After scaling by max margin, recompute the actual risk in USD for logging/state
