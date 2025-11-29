@@ -1,5 +1,27 @@
 # DeepSeek Paper Trading Bot
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F1F11HO935)
+
+<img width="220" height="286" alt="b7c0054cf81fe6735d60ab5de48243e5" src="https://github.com/user-attachments/assets/4628befa-96b4-42dd-af42-4724a9a28336" />
+
+## 🏢 代部署服务
+
+**不想自己部署？我们提供代部署服务！**
+
+### 服务器部署的优势
+- 🖥️ **无需本地电脑运行** - 服务器24小时自动运行，无需保持自己的电脑开着
+- 🌍 **无需翻墙** - 推荐的服务器在国外环境，访问Binance API更稳定
+- 🔋 **省心省力** - 专业配置，自动运行，无需担心环境配置和网络问题
+
+### 服务费用
+- 💰 **服务器成本低** - 一个服务器月租仅需40元人民币
+- 🛠️ **部署服务费面议** - 根据具体需求进行配置和部署
+
+### 联系方式
+📱 **有意者请加微信**: `gptkit`
+
+> 备注：代部署服务包含完整的环境配置、系统部署、运行测试和使用指导。
+
 This repository contains a paper-trading bot (with optional Hyperliquid mainnet execution) that runs against the Binance REST API while leveraging DeepSeek for trade decision-making. Inspired by the https://nof1.ai/ challenge. A live deployment is available at [llm-trader.streamlit.app](https://llm-trader.streamlit.app/), where you can access the dashboard and review the complete bot conversation log.
 
 The app persists its runtime data (portfolio state, AI messages, and trade history) inside a dedicated `data/` directory so it can be mounted as a volume when running in Docker.
