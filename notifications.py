@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests
 from colorama import Fore, Style
-from strategy_core import (
+from display.formatters import (
     build_entry_signal_message as _build_entry_signal_message,
     build_close_signal_message as _build_close_signal_message,
 )

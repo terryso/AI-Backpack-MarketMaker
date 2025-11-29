@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hyperliquid_client import HyperliquidTradingClient
-from exchange_client import HyperliquidExchangeClient
+from exchange.hyperliquid import HyperliquidExchangeClient
 
 DEFAULT_COIN = "BTC"
 DEFAULT_NOTIONAL = Decimal("2")  # ~2 USD

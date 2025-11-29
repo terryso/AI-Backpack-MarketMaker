@@ -1,3 +1,8 @@
+"""Trade routing and planning logic.
+
+This module provides functions for computing entry/close plans and
+routing live trades to the appropriate exchange backends.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,11 +10,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import logging
 
-from exchange_client import CloseResult, EntryResult, get_exchange_client
+from exchange.base import CloseResult, EntryResult
+from exchange.factory import get_exchange_client
 
 
 @dataclass
 class EntryPlan:
+    """Computed entry plan with position sizing and fees."""
     side: str
     leverage: float
     stop_loss_price: float
@@ -215,6 +222,7 @@ def compute_entry_plan(
 
 @dataclass
 class ClosePlan:
+    """Computed close plan with PnL and fee breakdown."""
     raw_reason: str
     reason_text: str
     pnl: float

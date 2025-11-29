@@ -1,8 +1,7 @@
-"""
-Trade execution logic.
+"""Unified trade execution logic.
 
-This module handles the execution of entry and close trades,
-including position management and notifications.
+This module provides the TradeExecutor class which handles all trade
+execution including entry, close, and hold signal processing.
 """
 from __future__ import annotations
 
@@ -30,14 +29,14 @@ from metrics import (
     calculate_pnl_for_price,
     format_leverage_display,
 )
-from execution_routing import (
-    check_stop_loss_take_profit_for_positions as _check_sltp_for_positions,
-    compute_entry_plan as _compute_entry_plan,
-    compute_close_plan as _compute_close_plan,
-    route_live_entry as _route_live_entry,
-    route_live_close as _route_live_close,
+from execution.routing import (
+    check_stop_loss_take_profit_for_positions,
+    compute_entry_plan,
+    compute_close_plan,
+    route_live_entry,
+    route_live_close,
 )
-from exchange_client import CloseResult, EntryResult
+from exchange.base import CloseResult, EntryResult
 from notifications import (
     emit_close_console_log,
     emit_entry_console_log,
@@ -47,7 +46,14 @@ from notifications import (
 
 
 class TradeExecutor:
-    """Handles trade execution with injected dependencies."""
+    """Handles trade execution with injected dependencies.
+    
+    This class encapsulates all trade execution logic including:
+    - Entry trade execution
+    - Close trade execution
+    - Hold signal processing
+    - Stop loss / take profit checking
+    """
     
     def __init__(
         self,
@@ -70,6 +76,28 @@ class TradeExecutor:
         binance_futures_live: bool,
         backpack_futures_live: bool,
     ):
+        """Initialize the trade executor with dependencies.
+        
+        Args:
+            positions: Dictionary of current positions.
+            get_balance: Function to get current balance.
+            set_balance: Function to set balance.
+            get_current_time: Function to get current time.
+            calculate_unrealized_pnl: Function to calculate unrealized PnL.
+            estimate_exit_fee: Function to estimate exit fee.
+            record_iteration_message: Function to record iteration messages.
+            log_trade: Function to log trades.
+            log_ai_decision: Function to log AI decisions.
+            save_state: Function to save state.
+            send_telegram_message: Function to send Telegram messages.
+            escape_markdown: Function to escape Markdown.
+            fetch_market_data: Function to fetch market data.
+            hyperliquid_trader: Hyperliquid trading client.
+            get_binance_futures_exchange: Function to get Binance futures exchange.
+            trading_backend: Trading backend name.
+            binance_futures_live: Whether Binance futures live trading is enabled.
+            backpack_futures_live: Whether Backpack futures live trading is enabled.
+        """
         self.positions = positions
         self.get_balance = get_balance
         self.set_balance = set_balance
@@ -90,13 +118,19 @@ class TradeExecutor:
         self.backpack_futures_live = backpack_futures_live
 
     def execute_entry(self, coin: str, decision: Dict[str, Any], current_price: float) -> None:
-        """Execute entry trade."""
+        """Execute entry trade.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC").
+            decision: AI decision dictionary.
+            current_price: Current market price.
+        """
         if coin in self.positions:
             logging.warning(f"{coin}: Already have position, skipping entry")
             return
 
         balance = self.get_balance()
-        plan = _compute_entry_plan(
+        plan = compute_entry_plan(
             coin=coin,
             decision=decision,
             current_price=current_price,
@@ -132,7 +166,7 @@ class TradeExecutor:
             or (self.trading_backend == "backpack_futures" and self.backpack_futures_live)
             or (self.trading_backend == "hyperliquid" and self.hyperliquid_trader.is_live)
         ):
-            entry_result, live_backend = _route_live_entry(
+            entry_result, live_backend = route_live_entry(
                 coin=coin,
                 side=side,
                 quantity=quantity,
@@ -271,7 +305,13 @@ class TradeExecutor:
         self.save_state()
 
     def execute_close(self, coin: str, decision: Dict[str, Any], current_price: float) -> None:
-        """Execute close trade."""
+        """Execute close trade.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC").
+            decision: AI decision dictionary.
+            current_price: Current market price.
+        """
         if coin not in self.positions:
             logging.warning(f"{coin}: No position to close")
             return
@@ -279,7 +319,7 @@ class TradeExecutor:
         pos = self.positions[coin]
         pnl = self.calculate_unrealized_pnl(coin, current_price)
 
-        close_plan = _compute_close_plan(
+        close_plan = compute_close_plan(
             coin=coin,
             decision=decision,
             current_price=current_price,
@@ -301,7 +341,7 @@ class TradeExecutor:
             or (self.trading_backend == "backpack_futures" and self.backpack_futures_live)
             or (self.trading_backend == "hyperliquid" and self.hyperliquid_trader.is_live)
         ):
-            close_result = _route_live_close(
+            close_result = route_live_close(
                 coin=coin,
                 side=pos['side'],
                 quantity=pos['quantity'],
@@ -382,7 +422,13 @@ class TradeExecutor:
             logging.debug("Failed to send CLOSE signal to Telegram (non-fatal): %s", exc)
 
     def process_hold_signal(self, coin: str, decision: Dict[str, Any], current_price: float) -> None:
-        """Process a hold signal for an existing position."""
+        """Process a hold signal for an existing position.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC").
+            decision: AI decision dictionary.
+            current_price: Current market price.
+        """
         if coin not in self.positions:
             return
 
@@ -488,7 +534,11 @@ class TradeExecutor:
         self.record_iteration_message(line)
 
     def process_ai_decisions(self, decisions: Dict[str, Any]) -> None:
-        """Handle AI decisions for each tracked coin."""
+        """Handle AI decisions for each tracked coin.
+        
+        Args:
+            decisions: Dictionary of AI decisions keyed by coin.
+        """
         for coin in SYMBOL_TO_COIN.values():
             if coin not in decisions:
                 continue
@@ -523,7 +573,7 @@ class TradeExecutor:
 
     def check_stop_loss_take_profit(self) -> None:
         """Check and execute stop loss / take profit for all positions."""
-        _check_sltp_for_positions(
+        check_stop_loss_take_profit_for_positions(
             positions=self.positions,
             symbol_to_coin=SYMBOL_TO_COIN,
             fetch_market_data=self.fetch_market_data,

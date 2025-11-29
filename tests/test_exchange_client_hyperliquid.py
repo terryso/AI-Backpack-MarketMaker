@@ -1,10 +1,7 @@
 import unittest
 
-from exchange_client import (
-    CloseResult,
-    EntryResult,
-    HyperliquidExchangeClient,
-)
+from exchange.base import CloseResult, EntryResult
+from exchange.hyperliquid import HyperliquidExchangeClient
 
 
 class _StubHyperliquidTradingClient:

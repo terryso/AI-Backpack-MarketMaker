@@ -1,10 +1,7 @@
 import unittest
 
-from exchange_client import (
-    CloseResult,
-    EntryResult,
-    BinanceFuturesExchangeClient,
-)
+from exchange.base import CloseResult, EntryResult
+from exchange.binance import BinanceFuturesExchangeClient
 
 
 class _StubBinanceExchange:

@@ -1,10 +1,7 @@
 import unittest
 
-from exchange_client import (
-    BackpackFuturesExchangeClient,
-    CloseResult,
-    EntryResult,
-)
+from exchange.base import CloseResult, EntryResult
+from exchange.backpack import BackpackFuturesExchangeClient
 
 
 # Example keys taken from Backpack official Python API guide.

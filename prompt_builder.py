@@ -18,11 +18,9 @@ from trading_config import (
     INTERVAL,
     START_CAPITAL,
 )
-from strategy_core import (
-    build_market_snapshot as _strategy_build_market_snapshot,
-    build_trading_prompt as _strategy_build_trading_prompt,
-)
-from trading_loop import (
+from strategy.snapshot import build_market_snapshot as _strategy_build_market_snapshot
+from llm.prompt import build_trading_prompt as _strategy_build_trading_prompt
+from strategy.indicators import (
     add_indicator_columns,
     calculate_atr_series,
     calculate_indicators,

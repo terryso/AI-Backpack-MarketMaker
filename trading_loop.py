@@ -75,23 +75,23 @@ from metrics import (
     calculate_total_margin_for_positions as _metrics_total_margin_for_positions,
     format_leverage_display as _metrics_format_leverage_display,
 )
-from strategy_core import (
+from strategy.indicators import (
     calculate_rsi_series as _strategy_calculate_rsi_series,
     add_indicator_columns as _strategy_add_indicator_columns,
     calculate_atr_series as _strategy_calculate_atr_series,
     calculate_indicators as _strategy_calculate_indicators,
     round_series as _strategy_round_series,
-    build_market_snapshot as _strategy_build_market_snapshot,
-    build_trading_prompt as _strategy_build_trading_prompt,
 )
-from execution_routing import (
+from strategy.snapshot import build_market_snapshot as _strategy_build_market_snapshot
+from llm.prompt import build_trading_prompt as _strategy_build_trading_prompt
+from execution.routing import (
     check_stop_loss_take_profit_for_positions as _check_sltp_for_positions,
     compute_entry_plan as _compute_entry_plan,
     compute_close_plan as _compute_close_plan,
     route_live_entry as _route_live_entry,
     route_live_close as _route_live_close,
 )
-from exchange_client import CloseResult, EntryResult
+from exchange.base import CloseResult, EntryResult
 from notifications import (
     emit_close_console_log,
     emit_entry_console_log,

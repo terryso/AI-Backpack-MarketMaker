@@ -22,7 +22,7 @@ from trading_config import (
     TRADING_RULES_PROMPT,
     SYMBOL_TO_COIN,
 )
-from strategy_core import (
+from llm.parser import (
     recover_partial_decisions as _strategy_recover_partial_decisions,
     parse_llm_json_decisions as _strategy_parse_llm_json_decisions,
 )
