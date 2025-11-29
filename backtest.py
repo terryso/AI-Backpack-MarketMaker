@@ -20,6 +20,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 from binance.client import Client
+from binance.exceptions import BinanceAPIException
 from dotenv import load_dotenv
 
 # Columns returned by Binance kline endpoints
@@ -292,7 +293,19 @@ def ensure_cached_klines(
         end_str = end_with_buffer.strftime("%Y-%m-%d %H:%M:%S")
         logging.info("Downloading %s %s klines from Binance (%s → %s)...", symbol, interval, start_str, end_str)
         # Pass millisecond timestamps to avoid ambiguous string date parsing in python-binance.
-        klines = client.get_historical_klines(symbol, interval, start_ms_required, end_ms_required)
+        try:
+            klines = client.get_historical_klines(symbol, interval, start_ms_required, end_ms_required)
+        except BinanceAPIException as exc:
+            code = getattr(exc, "code", None)
+            message = getattr(exc, "message", "")
+            if code == -1121 or "Invalid symbol" in str(message):
+                logging.warning(
+                    "Skipping symbol %s for interval %s in backtest: Binance reports invalid symbol.",
+                    symbol,
+                    interval,
+                )
+                return pd.DataFrame(columns=KLINE_COLUMNS)
+            raise
         fetched = normalize_kline_dataframe(pd.DataFrame(klines, columns=KLINE_COLUMNS))
         if cached.empty:
             cached = fetched
@@ -423,7 +436,16 @@ def summarize_trades(trades_path: Path) -> Dict[str, Optional[float]]:
 
 def configure_environment(cfg: BacktestConfig) -> None:
     os.environ["TRADEBOT_DATA_DIR"] = str(cfg.run_dir)
+
+    # Backtests must never send live orders, regardless of how the .env is
+    # configured. Force the trading backend into paper mode and disable all
+    # live-trading flags before importing the bot module so that its globals
+    # are derived from these safe settings.
+    os.environ["TRADING_BACKEND"] = "paper"
+    os.environ["LIVE_TRADING_ENABLED"] = "false"
     os.environ["HYPERLIQUID_LIVE_TRADING"] = "false"
+    os.environ["BINANCE_FUTURES_LIVE"] = "false"
+    os.environ["BACKPACK_FUTURES_LIVE"] = "false"
     if cfg.start_capital is not None:
         os.environ["PAPER_START_CAPITAL"] = str(cfg.start_capital)
     if cfg.model:
@@ -476,6 +498,18 @@ def main() -> None:
     if hasattr(bot, "log_system_prompt_info"):
         bot.log_system_prompt_info("Backtest system prompt")
         print(f"System prompt for this backtest: {bot.describe_system_prompt_source()}")
+
+    # Ensure the imported bot operates in pure paper mode for backtests.
+    if hasattr(bot, "TRADING_BACKEND"):
+        bot.TRADING_BACKEND = "paper"
+    if hasattr(bot, "BINANCE_FUTURES_LIVE"):
+        bot.BINANCE_FUTURES_LIVE = False
+    if hasattr(bot, "HYPERLIQUID_LIVE_TRADING"):
+        bot.HYPERLIQUID_LIVE_TRADING = False
+    if hasattr(bot, "BACKPACK_FUTURES_LIVE"):
+        bot.BACKPACK_FUTURES_LIVE = False
+    if hasattr(bot, "IS_LIVE_BACKEND"):
+        bot.IS_LIVE_BACKEND = False
 
     backtest_symbols_raw = os.getenv("BACKTEST_SYMBOLS")
     if backtest_symbols_raw:
