@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 
 from colorama import Fore, Style
 
-from trading_config import (
+from config.settings import (
     SYMBOL_TO_COIN,
     COIN_TO_SYMBOL,
     MAKER_FEE_RATE,
@@ -25,7 +25,7 @@ from trading_config import (
     BACKPACK_API_WINDOW_MS,
     TELEGRAM_SIGNALS_CHAT_ID,
 )
-from metrics import (
+from core.metrics import (
     calculate_pnl_for_price,
     format_leverage_display,
 )
@@ -37,9 +37,11 @@ from execution.routing import (
     route_live_close,
 )
 from exchange.base import CloseResult, EntryResult
-from notifications import (
+from notifications.logging import (
     emit_close_console_log,
     emit_entry_console_log,
+)
+from notifications.telegram import (
     send_close_signal_to_telegram,
     send_entry_signal_to_telegram,
 )

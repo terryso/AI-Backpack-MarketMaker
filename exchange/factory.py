@@ -12,7 +12,7 @@ import ccxt
 from binance.client import Client
 from requests.exceptions import RequestException, Timeout
 
-from trading_config import (
+from config.settings import (
     API_KEY,
     API_SECRET,
     TRADING_BACKEND,
@@ -23,7 +23,7 @@ from trading_config import (
     HYPERLIQUID_WALLET_ADDRESS,
     HYPERLIQUID_PRIVATE_KEY,
 )
-from hyperliquid_client import HyperliquidTradingClient
+from exchange.hyperliquid_client import HyperliquidTradingClient
 from exchange.market_data import BinanceMarketDataClient, BackpackMarketDataClient
 from exchange.base import ExchangeClient
 from exchange.hyperliquid import HyperliquidExchangeClient

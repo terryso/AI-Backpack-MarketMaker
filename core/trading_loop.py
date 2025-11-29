@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from colorama import Fore, Style
 
-from trading_config import (
+from config.settings import (
     SYMBOLS,
     SYMBOL_TO_COIN,
     COIN_TO_SYMBOL,
@@ -46,7 +46,7 @@ from trading_config import (
     TRADES_CSV,
     DECISIONS_CSV,
 )
-from trading_state import (
+from core.state import (
     get_balance,
     set_balance,
     update_balance,
@@ -62,11 +62,11 @@ from trading_state import (
     save_state,
     escape_markdown,
 )
-from state_io import (
+from core.persistence import (
     append_portfolio_state_row as _append_portfolio_state_row,
     append_trade_row as _append_trade_row,
 )
-from metrics import (
+from core.metrics import (
     calculate_sortino_ratio as _metrics_calculate_sortino_ratio,
     calculate_pnl_for_price as _metrics_calculate_pnl_for_price,
     calculate_unrealized_pnl_for_position as _metrics_unrealized_pnl_for_pos,
@@ -92,12 +92,14 @@ from execution.routing import (
     route_live_close as _route_live_close,
 )
 from exchange.base import CloseResult, EntryResult
-from notifications import (
+from notifications.logging import (
     emit_close_console_log,
     emit_entry_console_log,
+    record_iteration_message as _notifications_record_iteration_message,
+)
+from notifications.telegram import (
     send_close_signal_to_telegram,
     send_entry_signal_to_telegram,
-    record_iteration_message as _notifications_record_iteration_message,
 )
 
 

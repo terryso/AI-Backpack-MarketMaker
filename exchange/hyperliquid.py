@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from exchange.base import EntryResult, CloseResult
 
 if TYPE_CHECKING:
-    from hyperliquid_client import HyperliquidTradingClient
+    from exchange.hyperliquid_client import HyperliquidTradingClient
 
 
 class HyperliquidExchangeClient:

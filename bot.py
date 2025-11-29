@@ -26,8 +26,7 @@ import requests
 
 # ───────────────────────── CONFIGURATION ─────────────────────────
 import config.settings as _config_settings
-import trading_config as _trading_config
-from trading_config import (
+from config.settings import (
     LLM_API_KEY, LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_MAX_TOKENS,
     LLM_THINKING_PARAM, LLM_API_BASE_URL, LLM_API_TYPE,
     TRADING_RULES_PROMPT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
@@ -38,12 +37,9 @@ from trading_config import (
     log_system_prompt_info, BACKPACK_API_BASE_URL, MARKET_DATA_BACKEND,
     EMA_LEN, RSI_LEN, MACD_FAST, MACD_SLOW, MACD_SIGNAL,
     OPENROUTER_API_KEY, SYSTEM_PROMPT_SOURCE, describe_system_prompt_source,
-    DEFAULT_TRADING_RULES_PROMPT,
-)
-from trading_config import (
+    DEFAULT_TRADING_RULES_PROMPT, DEFAULT_LLM_MODEL,
     TRADING_BACKEND, BINANCE_FUTURES_LIVE, BACKPACK_FUTURES_LIVE,
 )
-from bot_config import DEFAULT_LLM_MODEL
 
 
 def refresh_llm_configuration_from_env() -> None:
@@ -67,8 +63,8 @@ def refresh_llm_configuration_from_env() -> None:
     SYSTEM_PROMPT_SOURCE = _config_settings.SYSTEM_PROMPT_SOURCE
 
 # ───────────────────────── STATE MANAGEMENT ─────────────────────────
-import trading_state
-from trading_state import (
+import core.state as _core_state
+from core.state import (
     get_balance, get_positions, get_current_time, get_bot_start_time,
     get_iteration_messages, get_equity_history, get_iteration_counter,
     increment_iteration_counter, clear_iteration_messages, reset_state,
@@ -77,49 +73,58 @@ from trading_state import (
 )
 
 # Module-level state references (for test compatibility)
-positions = trading_state.positions
-balance = trading_state.balance
-equity_history = trading_state.equity_history
-iteration_counter = trading_state.iteration_counter
+positions = _core_state.positions
+balance = _core_state.balance
+equity_history = _core_state.equity_history
+iteration_counter = _core_state.iteration_counter
 
 # ───────────────────────── EXCHANGE CLIENTS ─────────────────────────
 from exchange.factory import (
     get_binance_client, get_binance_futures_exchange, get_hyperliquid_trader,
 )
-from market_data import BinanceMarketDataClient, BackpackMarketDataClient
+from exchange.market_data import BinanceMarketDataClient, BackpackMarketDataClient
 
 hyperliquid_trader = get_hyperliquid_trader()
 _market_data_client = None
 
 # ───────────────────────── STATE I/O ─────────────────────────
-from state_io import (
+from core.persistence import (
     load_state_from_json, save_state_to_json, init_csv_files_for_paths,
 )
 
 # ───────────────────────── NOTIFICATIONS ─────────────────────────
-from notifications import (
+from notifications.logging import (
     log_ai_message as _log_ai_message,
-    send_telegram_message as _send_telegram_message,
     notify_error as _notify_error,
+)
+from notifications.telegram import (
+    send_telegram_message as _send_telegram_message,
 )
 
 # ───────────────────────── METRICS ─────────────────────────
-from metrics import (
+from core.metrics import (
     calculate_unrealized_pnl_for_position,
     calculate_net_unrealized_pnl_for_position,
     estimate_exit_fee_for_position,
     calculate_total_margin_for_positions,
+    calculate_sortino_ratio,
+    calculate_pnl_for_price,
+    format_leverage_display,
 )
 
-# ───────────────────────── INDICATORS (for test compatibility) ─────────────────────────
-from trading_loop import (
+# ───────────────────────── INDICATORS ─────────────────────────
+from strategy.indicators import (
     calculate_rsi_series, add_indicator_columns, calculate_atr_series,
-    calculate_indicators, round_series, calculate_pnl_for_price,
-    format_leverage_display, calculate_sortino_ratio,
+    calculate_indicators as _calculate_indicators, round_series,
 )
+
+
+def calculate_indicators(df: pd.DataFrame) -> pd.Series:
+    """Calculate indicators with default parameters (for test compatibility)."""
+    return _calculate_indicators(df, EMA_LEN, RSI_LEN, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
 
 # ───────────────────────── PROMPT & LLM ─────────────────────────
-from prompt_builder import (
+from llm.prompt import (
     fetch_market_data as _fetch_market_data,
     format_prompt_for_deepseek as _format_prompt,
     collect_prompt_market_data as _collect_prompt_market_data,
@@ -156,12 +161,16 @@ from execution.executor import TradeExecutor
 from execution.routing import check_stop_loss_take_profit_for_positions
 
 # ───────────────────────── DISPLAY ─────────────────────────
-from portfolio_display import (
+from display.portfolio import (
     log_portfolio_state as _log_portfolio_state,
     display_portfolio_summary as _display_portfolio_summary,
 )
-from trading_loop import (
+
+# ───────────────────────── TRADING LOOP (for test compatibility) ─────────────────────────
+from core.trading_loop import (
     log_trade, log_ai_decision, record_iteration_message, sleep_with_countdown,
+    execute_entry as _tl_execute_entry, execute_close as _tl_execute_close,
+    check_stop_loss_take_profit as _tl_check_sltp,
 )
 
 
@@ -173,7 +182,7 @@ def _set_balance(new_balance: float) -> None:
     """Set the balance."""
     global balance
     balance = new_balance
-    trading_state.balance = new_balance
+    _core_state.balance = new_balance
 
 
 def get_market_data_client():
@@ -231,8 +240,8 @@ def load_equity_history() -> None:
 
 def save_state() -> None:
     """Persist current state."""
-    # Sync module-level iteration_counter to trading_state before saving
-    trading_state.iteration_counter = iteration_counter
+    # Sync module-level iteration_counter to core.state before saving
+    _core_state.iteration_counter = iteration_counter
     save_state_to_json(STATE_JSON, {
         "balance": balance,
         "positions": positions,
