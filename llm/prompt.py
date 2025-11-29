@@ -493,11 +493,15 @@ def format_prompt_for_deepseek(
     positions = get_positions()
     balance = get_balance()
 
+    logging.info("Collecting market data for %d symbols...", len(SYMBOLS))
     market_snapshots: Dict[str, Dict[str, Any]] = {}
     for symbol in SYMBOLS:
+        logging.debug("Fetching market snapshot for %s...", symbol)
         snapshot = collect_prompt_market_data(symbol, get_market_data_client, interval)
         if snapshot:
             market_snapshots[snapshot["coin"]] = snapshot
+            logging.debug("Got snapshot for %s: price=%.4f", snapshot["coin"], snapshot.get("price", 0))
+    logging.info("Collected market data for %d/%d symbols", len(market_snapshots), len(SYMBOLS))
 
     total_margin = calculate_total_margin()
     total_equity = balance + total_margin

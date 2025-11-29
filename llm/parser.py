@@ -173,12 +173,77 @@ def parse_llm_json_decisions(
             )
             return None
 
-    notify_error(
-        "No JSON found in LLM response",
-        metadata={
-            "response_id": response_id,
-            "status_code": status_code,
-            "finish_reason": finish_reason,
-        },
+    # No JSON found - try to extract signals from text or return default holds
+    logging.warning("No JSON found in LLM response; attempting text-based signal extraction...")
+    
+    # Try to extract any trading signals from plain text
+    text_decisions = _extract_signals_from_text(content)
+    if text_decisions:
+        logging.info("Extracted %d signal(s) from text response", len(text_decisions))
+        log_llm_decisions(text_decisions)
+        return text_decisions
+    
+    # Log warning but don't send error notification for non-JSON responses
+    logging.warning(
+        "No JSON or extractable signals in LLM response (finish_reason=%s); skipping this iteration",
+        finish_reason,
     )
     return None
+
+
+def _extract_signals_from_text(content: str) -> Optional[Dict[str, Any]]:
+    """Try to extract trading signals from plain text response.
+    
+    This handles cases where the LLM returns analysis text instead of JSON.
+    Looks for patterns like "BTC: hold", "ETH: entry long", etc.
+    """
+    import re
+    from config.settings import SYMBOL_TO_COIN
+    
+    coins = list(SYMBOL_TO_COIN.values())
+    decisions: Dict[str, Any] = {}
+    content_lower = content.lower()
+    
+    for coin in coins:
+        coin_lower = coin.lower()
+        
+        # Look for explicit signal patterns
+        # Pattern: "COIN: signal" or "COIN - signal" or "COIN signal"
+        patterns = [
+            rf'\b{coin_lower}\s*[:\-]\s*(hold|entry|close|long|short|buy|sell)\b',
+            rf'\b{coin_lower}\s+(hold|entry|close|long|short|buy|sell)\b',
+            rf'(hold|entry|close|long|short|buy|sell)\s+{coin_lower}\b',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, content_lower)
+            if match:
+                signal_word = match.group(1) if match.lastindex else match.group(0)
+                signal_word = signal_word.strip().lower()
+                
+                # Map signal words to standard signals
+                if signal_word in ('hold',):
+                    signal = 'hold'
+                elif signal_word in ('entry', 'long', 'buy'):
+                    signal = 'entry'
+                    side = 'long'
+                elif signal_word in ('short', 'sell'):
+                    signal = 'entry'
+                    side = 'short'
+                elif signal_word in ('close',):
+                    signal = 'close'
+                else:
+                    continue
+                
+                decision = {
+                    "signal": signal,
+                    "justification": f"Extracted from text response: {match.group(0)}",
+                    "confidence": 0.5,  # Lower confidence for text-extracted signals
+                }
+                if signal == 'entry':
+                    decision["side"] = side
+                
+                decisions[coin] = decision
+                break
+    
+    return decisions if decisions else None

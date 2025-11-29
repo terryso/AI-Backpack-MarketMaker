@@ -2,7 +2,7 @@
 import json
 import pytest
 
-from llm.parser import recover_partial_decisions, parse_llm_json_decisions
+from llm.parser import recover_partial_decisions, parse_llm_json_decisions, _extract_signals_from_text
 
 
 class TestRecoverPartialDecisions:
@@ -157,7 +157,7 @@ class TestParseLlmJsonDecisions:
         assert result["BTC"]["signal"] == "entry"
 
     def test_handles_no_json(self, mock_notify_error, mock_log_decisions, mock_recover):
-        """Should notify error when no JSON found."""
+        """Should return None when no JSON found and no extractable signals."""
         content = "This response has no JSON at all"
         result = parse_llm_json_decisions(
             content,
@@ -170,8 +170,8 @@ class TestParseLlmJsonDecisions:
         )
         
         assert result is None
-        assert len(mock_notify_error.calls) == 1
-        assert "No JSON found" in mock_notify_error.calls[0]["msg"]
+        # No error notification for non-JSON responses (just warning logged)
+        assert len(mock_notify_error.calls) == 0
 
     def test_recovers_malformed_json(self, mock_notify_error, mock_log_decisions, mock_recover):
         """Should attempt recovery on malformed JSON."""
@@ -229,9 +229,14 @@ class TestParseLlmJsonDecisions:
         assert len(mock_notify_error.calls) == 1
         assert "decode failed" in mock_notify_error.calls[0]["msg"].lower()
 
-    def test_includes_metadata_in_error(self, mock_notify_error, mock_log_decisions, mock_recover):
-        """Should include metadata in error notifications."""
-        content = "no json here"
+    def test_includes_metadata_in_error(self, mock_notify_error, mock_log_decisions):
+        """Should include metadata in error notifications for decode failures."""
+        # Use malformed JSON that triggers decode error notification
+        content = '{invalid json that cannot be recovered}'
+        
+        def mock_recover_fail(json_str):
+            return None
+        
         parse_llm_json_decisions(
             content,
             response_id="test-123",
@@ -239,10 +244,82 @@ class TestParseLlmJsonDecisions:
             finish_reason="stop",
             notify_error=mock_notify_error,
             log_llm_decisions=mock_log_decisions,
-            recover_partial_decisions=mock_recover,
+            recover_partial_decisions=mock_recover_fail,
         )
         
+        assert len(mock_notify_error.calls) == 1
         metadata = mock_notify_error.calls[0]["metadata"]
         assert metadata["response_id"] == "test-123"
         assert metadata["status_code"] == 200
         assert metadata["finish_reason"] == "stop"
+
+
+class TestExtractSignalsFromText:
+    """Tests for _extract_signals_from_text function."""
+
+    def test_extracts_hold_signal(self):
+        """Should extract hold signals from text."""
+        content = "Based on my analysis, BTC: hold for now."
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "BTC" in result
+        assert result["BTC"]["signal"] == "hold"
+
+    def test_extracts_entry_long_signal(self):
+        """Should extract entry long signals."""
+        content = "ETH looks bullish. ETH: entry long with target 4000."
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "ETH" in result
+        assert result["ETH"]["signal"] == "entry"
+        assert result["ETH"]["side"] == "long"
+
+    def test_extracts_entry_short_signal(self):
+        """Should extract entry short signals."""
+        content = "SOL is bearish. SOL: short position recommended."
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "SOL" in result
+        assert result["SOL"]["signal"] == "entry"
+        assert result["SOL"]["side"] == "short"
+
+    def test_extracts_close_signal(self):
+        """Should extract close signals."""
+        content = "Time to exit. BTC - close the position."
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "BTC" in result
+        assert result["BTC"]["signal"] == "close"
+
+    def test_extracts_multiple_signals(self):
+        """Should extract multiple signals from text."""
+        content = "BTC: hold, ETH: long, SOL close position"
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "BTC" in result
+        assert result["BTC"]["signal"] == "hold"
+        assert "ETH" in result
+        assert result["ETH"]["signal"] == "entry"
+        assert "SOL" in result
+        assert result["SOL"]["signal"] == "close"
+
+    def test_returns_none_for_no_signals(self):
+        """Should return None when no signals found."""
+        content = "The market is volatile today. No clear direction."
+        result = _extract_signals_from_text(content)
+        
+        assert result is None
+
+    def test_case_insensitive(self):
+        """Should be case insensitive."""
+        content = "btc HOLD, eth LONG"
+        result = _extract_signals_from_text(content)
+        
+        assert result is not None
+        assert "BTC" in result
+        assert "ETH" in result

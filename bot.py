@@ -24,6 +24,12 @@ import pandas as pd
 from colorama import Fore
 import requests
 
+# ───────────────────────── LOGGING SETUP ─────────────────────────
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
+
 # ───────────────────────── CONFIGURATION ─────────────────────────
 import config.settings as _config_settings
 from config.settings import (
@@ -218,8 +224,8 @@ def load_state() -> None:
         positions.clear()
         positions.update(new_positions)
         iteration_counter = new_iteration
-        trading_state.balance = balance
-        trading_state.iteration_counter = new_iteration
+        _core_state.balance = balance
+        _core_state.iteration_counter = new_iteration
     except Exception as e:
         logging.error("Failed to load state: %s", e)
 
@@ -253,19 +259,37 @@ def save_state() -> None:
 def log_ai_message(direction: str, role: str, content: str, metadata: Optional[Dict] = None) -> None:
     """Log AI messages."""
     _log_ai_message(
-        MESSAGES_CSV, MESSAGES_RECENT_CSV, MAX_RECENT_MESSAGES,
-        get_current_time().isoformat(), direction, role, content, metadata,
+        messages_csv=MESSAGES_CSV,
+        messages_recent_csv=MESSAGES_RECENT_CSV,
+        max_recent_messages=MAX_RECENT_MESSAGES,
+        now_iso=get_current_time().isoformat(),
+        direction=direction,
+        role=role,
+        content=content,
+        metadata=metadata,
     )
 
 
 def send_telegram_message(text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = "Markdown") -> None:
     """Send Telegram notification."""
-    _send_telegram_message(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, text, chat_id, parse_mode)
+    _send_telegram_message(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        default_chat_id=TELEGRAM_CHAT_ID,
+        text=text,
+        chat_id=chat_id,
+        parse_mode=parse_mode,
+    )
 
 
 def notify_error(message: str, metadata: Optional[Dict] = None, *, log_error: bool = True) -> None:
     """Log error and notify via Telegram."""
-    _notify_error(message, metadata, log_error, log_ai_message, send_telegram_message)
+    _notify_error(
+        message=message,
+        metadata=metadata,
+        log_error=log_error,
+        log_ai_message_fn=log_ai_message,
+        send_telegram_message_fn=send_telegram_message,
+    )
 
 
 def calculate_unrealized_pnl(coin: str, current_price: float) -> float:
@@ -473,12 +497,50 @@ def main() -> None:
     load_state()
     
     if not LLM_API_KEY:
-        logging.error("No LLM API key configured.")
+        logging.error("No LLM API key configured; expected LLM_API_KEY or OPENROUTER_API_KEY in environment.")
         return
     
     logging.info(f"Starting capital: ${START_CAPITAL:.2f}")
     logging.info(f"Monitoring: {', '.join(SYMBOL_TO_COIN.values())}")
+    
+    # Log trading backend status
+    if hyperliquid_trader.is_live:
+        logging.warning(
+            "Hyperliquid LIVE trading enabled. Orders will be sent to mainnet using wallet %s.",
+            hyperliquid_trader.masked_wallet,
+        )
+    else:
+        logging.info("Hyperliquid live trading disabled; running in paper mode only.")
+    
+    if TRADING_BACKEND == "binance_futures":
+        if BINANCE_FUTURES_LIVE:
+            logging.warning(
+                "Binance futures LIVE trading enabled; orders will be sent to Binance USDT-margined futures.",
+            )
+        else:
+            logging.warning(
+                "TRADING_BACKEND=binance_futures but BINANCE_FUTURES_LIVE is not true; running in paper mode only.",
+            )
+    
+    if TRADING_BACKEND == "backpack_futures":
+        if BACKPACK_FUTURES_LIVE:
+            logging.warning(
+                "Backpack futures LIVE trading enabled; orders will be sent to Backpack USDC perpetual futures.",
+            )
+        else:
+            logging.warning(
+                "TRADING_BACKEND=backpack_futures but BACKPACK_FUTURES_LIVE is not true; running in paper mode only.",
+            )
+    
+    # Log Telegram status
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        logging.info("Telegram notifications enabled (chat: %s).", TELEGRAM_CHAT_ID)
+    else:
+        logging.info("Telegram notifications disabled; missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.")
+    
     log_system_prompt_info("System prompt selected")
+    logging.info("LLM model configured: %s", LLM_MODEL_NAME)
+    logging.info("Market data backend: %s", MARKET_DATA_BACKEND)
     
     while True:
         try:
