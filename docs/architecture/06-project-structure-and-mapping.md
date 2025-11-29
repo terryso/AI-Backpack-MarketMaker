@@ -2,35 +2,74 @@
 
 ```text
 LLM-trader-test/
-├── bot.py                # 交易主循环：行情拉取、LLM 决策、风控与交易执行，写入 data/
-├── backtest.py           # 回测入口：重放历史 K 线，重用 bot 逻辑并写入 data-backtest/
-├── dashboard.py          # Streamlit 仪表盘：读取 data/ 下 CSV/JSON 进行可视化
-├── hyperliquid_client.py # Hyperliquid 实盘执行适配器：负责 tick size、价格正规化和下单
-├── scripts/
-│   ├── recalculate_portfolio.py     # 根据 trade_history.csv 重算 portfolio_state.json
-│   ├── manual_hyperliquid_smoke.py  # 小额 Hyperliquid 实盘连通性 smoke test
-│   └── run_backtest_docker.sh       # 在 Docker 环境中批量运行回测
-├── data/                  # 运行时生成的数据目录（默认，通过 TRADEBOT_DATA_DIR 覆盖）
-├── data-backtest/         # 回测输出目录（backtest.py 每个 run-*/ 子目录）
-├── docs/
-│   ├── prd.md             # 反向工程 PRD（功能与非功能需求）
-│   ├── architecture.md    # 架构文档入口（链接到分片）
-│   └── architecture/
-│       ├── index.md
-│       ├── 01-overview-and-deployment.md
-│       ├── 02-components.md
-│       ├── 03-data-flow.md
-│       ├── 04-integrations.md
-│       ├── 05-evolution.md
-│       ├── 06-project-structure-and-mapping.md
-│       └── 07-implementation-patterns.md
-├── .bmad/                 # BMAD/BMM 模块与工作流配置
-├── .env.example           # 环境变量示例文件
-├── Dockerfile             # Docker 构建与运行配置（Python 3.13.3-slim 基础镜像）
-└── requirements.txt       # Python 依赖清单
+├── bot.py                      # 交易主入口：协调各模块，启动交易循环
+├── backtest.py                 # 回测入口：重放历史 K 线，重用核心逻辑
+├── dashboard.py                # Streamlit 仪表盘：读取 data/ 下 CSV/JSON 进行可视化
+│
+├── config/                     # 配置层
+│   ├── __init__.py
+│   └── settings.py             # 统一配置加载
+│
+├── core/                       # 核心业务层
+│   ├── __init__.py
+│   ├── state.py                # 状态管理
+│   ├── persistence.py          # 状态持久化
+│   ├── metrics.py              # 指标计算
+│   └── trading_loop.py         # 核心交易循环
+│
+├── exchange/                   # 交易所层
+│   ├── __init__.py
+│   ├── base.py                 # 抽象接口（ExchangeClient Protocol）
+│   ├── factory.py              # 客户端工厂
+│   ├── hyperliquid.py          # Hyperliquid 适配器
+│   ├── binance.py              # Binance Futures 适配器
+│   ├── backpack.py             # Backpack 适配器
+│   ├── hyperliquid_client.py   # 原始 SDK 封装（兼容层）
+│   └── market_data.py          # 市场数据客户端
+│
+├── execution/                  # 执行层
+│   ├── __init__.py
+│   ├── executor.py             # 统一交易执行器
+│   └── routing.py              # 路由逻辑
+│
+├── strategy/                   # 策略层
+│   ├── __init__.py
+│   ├── indicators.py           # 技术指标计算
+│   └── snapshot.py             # 市场快照构建
+│
+├── llm/                        # LLM 层
+│   ├── __init__.py
+│   ├── client.py               # LLM API 调用
+│   ├── prompt.py               # Prompt 构建
+│   └── parser.py               # 响应解析
+│
+├── display/                    # 显示层
+│   ├── __init__.py
+│   ├── formatters.py           # 消息格式化
+│   └── portfolio.py            # 投资组合显示
+│
+├── notifications/              # 通知层
+│   ├── __init__.py
+│   ├── telegram.py             # Telegram 通知
+│   └── logging.py              # 日志记录
+│
+├── utils/                      # 工具层
+│   ├── __init__.py
+│   └── text.py                 # 文本处理工具
+│
+├── prompts/                    # Prompt 模板目录
+├── scripts/                    # 工具脚本
+├── replay/                     # 回放站点
+├── tests/                      # 测试目录
+├── data/                       # 运行时数据目录
+├── data-backtest/              # 回测输出目录
+├── docs/                       # 文档目录
+├── .env.example                # 环境变量示例
+├── Dockerfile                  # Docker 构建配置
+└── requirements.txt            # Python 依赖清单
 ```
 
-> 说明：`data/`、`data-backtest/`、`data-backtest/run-*/` 等目录多为运行期生成内容，通常不会提交到版本库中。
+> 说明：`data/`、`data-backtest/` 等目录为运行期生成内容，通常不会提交到版本库中。
 
 ---
 
@@ -40,21 +79,21 @@ LLM-trader-test/
 
 | PRD 功能块 | 主要实现组件 | 关键数据/目录 | 说明 |
 | ---------- | ------------ | ------------- | ---- |
-| 交易主循环（4.1） | `bot.py` | `data/portfolio_state.*`, `data/trade_history.csv`, `data/ai_decisions.csv`, `data/ai_messages.csv` | 定时调度、行情拉取、指标计算、Prompt 构建、LLM 调用、决策解析与执行均在此集中实现。 |
-| 风险控制与资金管理（4.2） | `bot.py` | 同上（特别是 `trade_history.csv`、`portfolio_state.*`） | 单笔风险、止损/止盈、仓位规模与杠杆逻辑在 Bot 内部封装，由 CSV/JSON 记录结果。 |
-| LLM 配置与 Prompt 管理（4.3） | `bot.py` + `.env` / Prompt 文件 | `.env` / `TRADEBOT_SYSTEM_PROMPT_FILE` 指向的文件 | LLM 模型名、温度、thinking 参数、系统 Prompt 的解析与热更新逻辑集中在 `bot.py` 顶部配置区。 |
-| 数据持久化与日志（4.4） | `bot.py`, `scripts/recalculate_portfolio.py` | `data/` | Bot 负责写入 CSV/JSON，recalculate 脚本负责从 trade_history 重建组合状态，与 PRD 中「可复现性」和「审计」要求对应。 |
-| 仪表盘（4.5） | `dashboard.py` | `data/portfolio_state.csv`, `data/trade_history.csv`, `data/ai_decisions.csv`, `data/ai_messages.csv` | Streamlit 应用从 data/ 中读取文件并计算 Sharpe/Sortino 等指标，对应 PRD 的可视化与可观测性需求。 |
-| 回测（4.6） | `backtest.py`, `bot.py` | `data-backtest/cache/`, `data-backtest/run-*/` | 回测通过 HistoricalBinanceClient 重用 Bot 逻辑，输出与 live 近似的数据布局，满足「策略评估」类需求。 |
-| Telegram 通知（4.7） | `bot.py` | 无持久化目录（通过 Telegram API 推送） | `send_telegram_message` 与 `notify_error` 实现迭代摘要与错误通知，对应 PRD 的运维与信号通知场景。 |
-| Hyperliquid 实盘集成（4.8） | `hyperliquid_client.py`, `bot.py`, `scripts/manual_hyperliquid_smoke.py` | 无本地数据目录（主要依赖远端状态） | 适配器封装下单细节，Bot 负责在纸上/实盘之间切换，smoke 脚本用于手动连通性验证。 |
-| 非功能：性能与稳定性（5.1） | `bot.py`, `backtest.py`, `dashboard.py` | `data/`, `data-backtest/` | 通过统一的数据目录与 CSV/JSON 结构，使不同组件可以解耦演进；稳定性由重试逻辑与错误日志保证（详见实现模式章节）。 |
-| 非功能：安全性（5.2） | `.env`、`bot.py`, `manual_hyperliquid_smoke.py` | `.env`（未提交）、运行环境 | 所有 API Key/私钥均通过环境变量注入；默认不开启实盘，仅在用户显式配置 Hyperliquid 并运行手工 smoke test 后才启用。 |
-| 非功能：可观测性（5.3） | `bot.py`, `dashboard.py`, `replay/` | `data/`, `data-backtest/` | Bot 在 CSV/JSON 中记录完整决策与状态，Dashboard 和 replay 站点负责可视化与回放，支撑「可观测性」需求。 |
+| 交易主循环（4.1） | `bot.py`, `core/trading_loop.py`, `execution/executor.py` | `data/portfolio_state.*`, `data/trade_history.csv` | 协调由 `bot.py`，核心逻辑在 `core/trading_loop.py`，执行由 `execution/` 处理。 |
+| 风险控制与资金管理（4.2） | `execution/routing.py`, `core/metrics.py` | `trade_history.csv`, `portfolio_state.*` | 风险计算在 `execution/routing.py`，指标计算在 `core/metrics.py`。 |
+| LLM 配置与 Prompt 管理（4.3） | `config/settings.py`, `llm/prompt.py`, `llm/client.py` | `.env`, `prompts/` | 配置在 `config/`，Prompt 构建在 `llm/prompt.py`，API 调用在 `llm/client.py`。 |
+| 数据持久化与日志（4.4） | `core/persistence.py`, `core/state.py` | `data/` | 状态管理在 `core/state.py`，持久化在 `core/persistence.py`。 |
+| 仪表盘（4.5） | `dashboard.py`, `display/` | `data/*.csv` | Streamlit 应用读取数据，`display/` 提供格式化支持。 |
+| 回测（4.6） | `backtest.py`, `exchange/market_data.py` | `data-backtest/` | 通过注入 `HistoricalBinanceClient` 重用核心逻辑。 |
+| Telegram 通知（4.7） | `notifications/telegram.py`, `display/formatters.py` | 无持久化 | 格式化在 `display/formatters.py`，发送在 `notifications/telegram.py`。 |
+| 交易所实盘集成（4.8） | `exchange/hyperliquid.py`, `exchange/binance.py`, `exchange/backpack.py` | 无本地数据 | 各适配器实现统一的 `ExchangeClient` Protocol。 |
+| 非功能：性能与稳定性（5.1） | 各模块 | `data/`, `data-backtest/` | 模块化架构支持解耦演进，稳定性由重试逻辑保证。 |
+| 非功能：安全性（5.2） | `config/settings.py`, `.env` | `.env`（未提交） | 所有敏感信息通过环境变量注入，默认不开启实盘。 |
+| 非功能：可观测性（5.3） | `core/persistence.py`, `dashboard.py`, `replay/` | `data/` | 完整决策与状态记录，支持可视化与回放。 |
 
-> 若后续在 PRD 中新增功能块（例如多账户、多策略调度、告警系统），应在本表中补充行，并在相应代码组件中实现对应的架构支撑。
+> 若后续在 PRD 中新增功能块，应在本表中补充行，并在相应代码组件中实现对应的架构支撑。
 
 此外：
 
 - 交易 backend 与 live 模式的配置入口集中在根目录 `.env.example` 与 README 的「Trading Backends & Live Mode Configuration」小节。
-- 新增交易所适配器时，统一通过 `exchange_client.py` 中的 `ExchangeClient` 抽象与 `get_exchange_client` 工厂进行扩展，对应 Epic 6 / Story 6.1–6.5 的执行层设计。
+- 新增交易所适配器时，统一通过 `exchange/base.py` 中的 `ExchangeClient` Protocol 与 `exchange/factory.py` 中的工厂函数进行扩展。

@@ -22,19 +22,31 @@
 
 ### 7.2 目录与代码结构（Structure Patterns）
 
-- **顶层结构**：
-  - `bot.py`：唯一的交易主循环入口，不引入第二个「主循环脚本」。
-  - `backtest.py`：统一的回测入口，复用 `bot.py` 的指标与执行逻辑。
+- **分层模块化架构**：
+  - `config/`：配置层，统一管理环境变量与常量。
+  - `core/`：核心业务层，包含状态管理、持久化、指标计算。
+  - `exchange/`：交易所层，统一的交易所接口与多后端实现。
+  - `execution/`：执行层，交易执行器与路由逻辑。
+  - `strategy/`：策略层，技术指标计算与市场快照。
+  - `llm/`：LLM 层，Prompt 构建、API 调用与响应解析。
+  - `display/`：显示层，消息格式化与投资组合显示。
+  - `notifications/`：通知层，Telegram 通知与日志记录。
+  - `utils/`：工具层，通用文本处理工具。
+
+- **入口层**：
+  - `bot.py`：交易主入口，协调各模块功能。
+  - `backtest.py`：回测入口，通过依赖注入复用核心逻辑。
   - `dashboard.py`：只读取 `data/` 下数据，不写入业务数据。
-  - `hyperliquid_client.py`：所有 Hyperliquid 相关逻辑的唯一适配层，不直接在 `bot.py` 中使用 SDK。
-- **扩展策略 / 工具代码**：
-  - 推荐新增 Python 模块放在顶层或 `scripts/` 下，避免在 `bot.py` 内堆积过多无关逻辑。
-  - 如需提取通用工具，可引入 `utils_*.py` 风格的模块，并在架构文档中补充说明用途。
-- **测试目录（推荐模式）**：
-  - 若引入自动化测试，统一放在 `tests/` 目录中，结构镜像源代码：
-    - `tests/test_bot_core.py`
-    - `tests/test_backtest_harness.py`
+
+- **模块导入规范**：
+  - 每个模块通过 `__init__.py` 导出公共接口。
+  - 优先从模块包导入，如 `from config import DATA_DIR`。
+  - 避免跨层直接导入内部实现。
+
+- **测试目录**：
+  - 测试统一放在 `tests/` 目录中。
   - 使用 pytest 风格的 `test_*.py` 文件。
+  - 测试文件命名对应功能模块，如 `test_entry_and_close.py`。
 
 ---
 
@@ -115,16 +127,34 @@
 
 ### 7.8 测试与校验模式（Testing Patterns）
 
-> 当前仓库尚未包含正式的自动化测试，本节为推荐实践，供未来扩展时遵循。
+项目已包含自动化测试，位于 `tests/` 目录。
 
-- 优先为以下逻辑添加单元测试：
-  - 指标计算函数（如 RSI/EMA/MACD/ATR）。
-  - 风险与仓位计算逻辑（单笔风险上限、保证金计算等）。
-  - CSV/JSON 读写与迁移逻辑（确保列结构变更不会破坏旧数据）。
-- 测试入口：
-  - 使用 pytest，在项目根目录运行 `pytest` 时默认加载 `tests/` 下的测试。
-- Smoke / 集成测试：
-  - Hyperliquid 集成可通过 `scripts/manual_hyperliquid_smoke.py` 手动验证；禁止将其纳入自动化 CI。
+- **测试覆盖范围**：
+  - `test_ai_and_backtest.py`：AI 决策与回测逻辑测试。
+  - `test_config_and_env.py`：配置加载与环境变量测试。
+  - `test_entry_and_close.py`：入场与平仓逻辑测试。
+  - `test_exchange_client.py`：交易所客户端测试。
+  - `test_indicators.py`：技术指标计算测试。
+  - `test_llm_parser.py`：LLM 响应解析测试。
+  - `test_routing.py`：交易路由逻辑测试。
+
+- **测试运行**：
+  ```bash
+  # 运行所有测试
+  pytest tests/ -v
+  
+  # 运行特定测试文件
+  pytest tests/test_indicators.py -v
+  
+  # 检查测试覆盖率
+  pytest tests/ --cov=. --cov-report=html
+  ```
+
+- **Smoke / 集成测试**：
+  - `scripts/manual_hyperliquid_smoke.py`：Hyperliquid 连通性测试。
+  - `scripts/manual_binance_futures_smoke.py`：Binance Futures 连通性测试。
+  - `scripts/manual_backpack_futures_smoke.py`：Backpack 连通性测试。
+  - 这些脚本需手动运行，禁止纳入自动化 CI。
 
 ---
 
