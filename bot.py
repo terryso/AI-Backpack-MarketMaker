@@ -27,6 +27,31 @@ from colorama import Fore, Style, init as colorama_init
 
 from hyperliquid_client import HyperliquidTradingClient
 from exchange_client import CloseResult, EntryResult, get_exchange_client
+from metrics import calculate_sortino_ratio as _metrics_calculate_sortino_ratio
+from market_data import BinanceMarketDataClient, BackpackMarketDataClient
+from state_io import (
+    load_equity_history_from_csv as _load_equity_history_from_csv,
+    init_csv_files_for_paths as _init_csv_files_for_paths,
+    save_state_to_json as _save_state_to_json,
+)
+from bot_config import (
+    EARLY_ENV_WARNINGS,
+    DEFAULT_LLM_MODEL,
+    TradingConfig,
+    _parse_bool_env,
+    _parse_float_env,
+    _parse_int_env,
+    _parse_thinking_env,
+    _load_llm_model_name,
+    _load_llm_temperature,
+    _load_llm_max_tokens,
+    _load_llm_api_base_url,
+    _load_llm_api_key,
+    _load_llm_api_type,
+    emit_early_env_warnings,
+    load_trading_config_from_env,
+    load_system_prompt_from_env,
+)
 
 colorama_init(autoreset=True)
 
@@ -41,67 +66,6 @@ else:
 DEFAULT_DATA_DIR = BASE_DIR / "data"
 DATA_DIR = Path(os.getenv("TRADEBOT_DATA_DIR", str(DEFAULT_DATA_DIR))).expanduser()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-EARLY_ENV_WARNINGS: List[str] = []
-
-def _parse_bool_env(value: Optional[str], *, default: bool = False) -> bool:
-    """Convert environment string to bool with sensible defaults."""
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _parse_float_env(value: Optional[str], *, default: float) -> float:
-    """Convert environment string to float with fallback and logging."""
-    if value is None or value == "":
-        return default
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        EARLY_ENV_WARNINGS.append(
-            f"Invalid float environment value '{value}'; using default {default:.2f}"
-        )
-        return default
-
-
-def _parse_int_env(value: Optional[str], *, default: int) -> int:
-    """Convert environment string to int with fallback and logging."""
-    if value is None or value == "":
-        return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        EARLY_ENV_WARNINGS.append(
-            f"Invalid int environment value '{value}'; using default {default}"
-        )
-        return default
-
-
-def _parse_thinking_env(value: Optional[str]) -> Optional[Any]:
-    """Parse LLM thinking budget/configuration from environment."""
-    if value is None:
-        return None
-    raw = value.strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        pass
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        pass
-    return raw
 
 
 # ───────────────────────── CONFIG ─────────────────────────
@@ -123,103 +87,25 @@ BACKPACK_API_WINDOW_MS = _parse_int_env(
     default=5000,
 )
 
-PAPER_START_CAPITAL = _parse_float_env(
-    os.getenv("PAPER_START_CAPITAL"),
-    default=10000.0,
-)
-HYPERLIQUID_CAPITAL = _parse_float_env(
-    os.getenv("HYPERLIQUID_CAPITAL"),
-    default=500.0,
-)
+_TRADING_CFG: TradingConfig = load_trading_config_from_env()
 
-_TRADING_BACKEND_RAW = os.getenv("TRADING_BACKEND")
-if _TRADING_BACKEND_RAW:
-    TRADING_BACKEND = _TRADING_BACKEND_RAW.strip().lower() or "paper"
-else:
-    TRADING_BACKEND = "paper"
-if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures", "backpack_futures"}:
-    EARLY_ENV_WARNINGS.append(
-        f"Unsupported TRADING_BACKEND '{_TRADING_BACKEND_RAW}'; using 'paper'."
-    )
-    TRADING_BACKEND = "paper"
-
-_MARKET_DATA_BACKEND_RAW = os.getenv("MARKET_DATA_BACKEND")
-if _MARKET_DATA_BACKEND_RAW:
-    MARKET_DATA_BACKEND = _MARKET_DATA_BACKEND_RAW.strip().lower() or "binance"
-else:
-    MARKET_DATA_BACKEND = "binance"
-if MARKET_DATA_BACKEND not in {"binance", "backpack"}:
-    EARLY_ENV_WARNINGS.append(
-        f"Unsupported MARKET_DATA_BACKEND '{_MARKET_DATA_BACKEND_RAW}'; using 'binance'."
-    )
-    MARKET_DATA_BACKEND = "binance"
-
-_LIVE_TRADING_ENV = os.getenv("LIVE_TRADING_ENABLED")
-if _LIVE_TRADING_ENV is not None:
-    LIVE_TRADING_ENABLED = _parse_bool_env(_LIVE_TRADING_ENV, default=False)
-else:
-    LIVE_TRADING_ENABLED = None
-
-if LIVE_TRADING_ENABLED is not None:
-    HYPERLIQUID_LIVE_TRADING = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "hyperliquid")
-else:
-    HYPERLIQUID_LIVE_TRADING = _parse_bool_env(
-        os.getenv("HYPERLIQUID_LIVE_TRADING"),
-        default=False,
-    )
-
-if LIVE_TRADING_ENABLED is not None:
-    BINANCE_FUTURES_LIVE = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "binance_futures")
-else:
-    BINANCE_FUTURES_LIVE = _parse_bool_env(
-        os.getenv("BINANCE_FUTURES_LIVE"),
-        default=False,
-    )
-
-if LIVE_TRADING_ENABLED is not None:
-    BACKPACK_FUTURES_LIVE = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "backpack_futures")
-else:
-    BACKPACK_FUTURES_LIVE = False
-
-BINANCE_FUTURES_MAX_RISK_USD = _parse_float_env(
-    os.getenv("BINANCE_FUTURES_MAX_RISK_USD"),
-    default=100.0,
-)
-BINANCE_FUTURES_MAX_LEVERAGE = _parse_float_env(
-    os.getenv("BINANCE_FUTURES_MAX_LEVERAGE"),
-    default=10.0,
-)
-
-BINANCE_FUTURES_MAX_MARGIN_USD = _parse_float_env(
-    os.getenv("BINANCE_FUTURES_MAX_MARGIN_USD"),
-    default=0.0,
-)
-
-LIVE_START_CAPITAL = _parse_float_env(
-    os.getenv("LIVE_START_CAPITAL"),
-    default=HYPERLIQUID_CAPITAL,
-)
-
-LIVE_MAX_RISK_USD = _parse_float_env(
-    os.getenv("LIVE_MAX_RISK_USD"),
-    default=BINANCE_FUTURES_MAX_RISK_USD,
-)
-LIVE_MAX_LEVERAGE = _parse_float_env(
-    os.getenv("LIVE_MAX_LEVERAGE"),
-    default=BINANCE_FUTURES_MAX_LEVERAGE,
-)
-LIVE_MAX_MARGIN_USD = _parse_float_env(
-    os.getenv("LIVE_MAX_MARGIN_USD"),
-    default=BINANCE_FUTURES_MAX_MARGIN_USD,
-)
-
-IS_LIVE_BACKEND = (
-    (TRADING_BACKEND == "hyperliquid" and HYPERLIQUID_LIVE_TRADING)
-    or (TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE)
-    or (TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE)
-)
-
-START_CAPITAL = LIVE_START_CAPITAL if IS_LIVE_BACKEND else PAPER_START_CAPITAL
+PAPER_START_CAPITAL = _TRADING_CFG.paper_start_capital
+HYPERLIQUID_CAPITAL = _TRADING_CFG.hyperliquid_capital
+TRADING_BACKEND = _TRADING_CFG.trading_backend
+MARKET_DATA_BACKEND = _TRADING_CFG.market_data_backend
+LIVE_TRADING_ENABLED = _TRADING_CFG.live_trading_enabled
+HYPERLIQUID_LIVE_TRADING = _TRADING_CFG.hyperliquid_live_trading
+BINANCE_FUTURES_LIVE = _TRADING_CFG.binance_futures_live
+BACKPACK_FUTURES_LIVE = _TRADING_CFG.backpack_futures_live
+BINANCE_FUTURES_MAX_RISK_USD = _TRADING_CFG.binance_futures_max_risk_usd
+BINANCE_FUTURES_MAX_LEVERAGE = _TRADING_CFG.binance_futures_max_leverage
+BINANCE_FUTURES_MAX_MARGIN_USD = _TRADING_CFG.binance_futures_max_margin_usd
+LIVE_START_CAPITAL = _TRADING_CFG.live_start_capital
+LIVE_MAX_RISK_USD = _TRADING_CFG.live_max_risk_usd
+LIVE_MAX_LEVERAGE = _TRADING_CFG.live_max_leverage
+LIVE_MAX_MARGIN_USD = _TRADING_CFG.live_max_margin_usd
+IS_LIVE_BACKEND = _TRADING_CFG.is_live_backend
+START_CAPITAL = _TRADING_CFG.start_capital
 
 # Trading symbols to monitor
 SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT", "PAXGUSDT", "PUMPUSDT", "MONUSDT", "HYPEUSDT"]
@@ -290,30 +176,9 @@ SYSTEM_PROMPT_SOURCE: Dict[str, Any] = {"type": "default"}
 def _load_system_prompt() -> str:
     """Load system prompt from env variables or fall back to default."""
     global SYSTEM_PROMPT_SOURCE
-    prompt_file = os.getenv("TRADEBOT_SYSTEM_PROMPT_FILE")
-    if prompt_file:
-        path = Path(prompt_file).expanduser()
-        if not path.is_absolute():
-            path = (BASE_DIR / path).resolve()
-        try:
-            if path.exists():
-                SYSTEM_PROMPT_SOURCE = {"type": "file", "path": str(path)}
-                return path.read_text(encoding="utf-8").strip()
-            EARLY_ENV_WARNINGS.append(
-                f"System prompt file '{path}' not found; using default prompt."
-            )
-        except Exception as exc:
-            EARLY_ENV_WARNINGS.append(
-                f"Failed to read system prompt file '{path}': {exc}; using default prompt."
-            )
-
-    prompt_env = os.getenv("TRADEBOT_SYSTEM_PROMPT")
-    if prompt_env:
-        SYSTEM_PROMPT_SOURCE = {"type": "env"}
-        return prompt_env.strip()
-
-    SYSTEM_PROMPT_SOURCE = {"type": "default"}
-    return DEFAULT_TRADING_RULES_PROMPT
+    prompt, source = load_system_prompt_from_env(BASE_DIR, DEFAULT_TRADING_RULES_PROMPT)
+    SYSTEM_PROMPT_SOURCE = dict(source)
+    return prompt
 
 
 def describe_system_prompt_source() -> str:
@@ -361,58 +226,6 @@ def _load_trade_interval(default: str = DEFAULT_INTERVAL) -> str:
 INTERVAL = _load_trade_interval()
 CHECK_INTERVAL = _INTERVAL_TO_SECONDS[INTERVAL]
 DEFAULT_RISK_FREE_RATE = 0.0  # Annualized baseline for Sortino ratio calculations
-DEFAULT_LLM_MODEL = "deepseek/deepseek-chat-v3.1"
-
-
-def _load_llm_model_name() -> str:
-    raw = os.getenv("TRADEBOT_LLM_MODEL", DEFAULT_LLM_MODEL)
-    if not raw:
-        return DEFAULT_LLM_MODEL
-    value = raw.strip()
-    return value or DEFAULT_LLM_MODEL
-
-
-def _load_llm_temperature() -> float:
-    return _parse_float_env(
-        os.getenv("TRADEBOT_LLM_TEMPERATURE"),
-        default=0.7,
-    )
-
-
-def _load_llm_max_tokens() -> int:
-    return _parse_int_env(
-        os.getenv("TRADEBOT_LLM_MAX_TOKENS"),
-        default=4000,
-    )
-
-
-def _load_llm_api_base_url() -> str:
-    raw = os.getenv("LLM_API_BASE_URL")
-    if raw:
-        value = raw.strip()
-        if value:
-            return value
-    return "https://openrouter.ai/api/v1/chat/completions"
-
-
-def _load_llm_api_key() -> str:
-    raw = os.getenv("LLM_API_KEY")
-    if raw:
-        value = raw.strip()
-        if value:
-            return value
-    return OPENROUTER_API_KEY
-
-
-def _load_llm_api_type() -> str:
-    raw = os.getenv("LLM_API_TYPE")
-    if raw:
-        value = raw.strip().lower()
-        if value:
-            return value
-    if os.getenv("LLM_API_BASE_URL"):
-        return "custom"
-    return "openrouter"
 
 
 def refresh_llm_configuration_from_env() -> None:
@@ -424,7 +237,7 @@ def refresh_llm_configuration_from_env() -> None:
     LLM_THINKING_PARAM = _parse_thinking_env(os.getenv("TRADEBOT_LLM_THINKING"))
     TRADING_RULES_PROMPT = _load_system_prompt()
     LLM_API_BASE_URL = _load_llm_api_base_url()
-    LLM_API_KEY = _load_llm_api_key()
+    LLM_API_KEY = _load_llm_api_key(OPENROUTER_API_KEY)
     LLM_API_TYPE = _load_llm_api_type()
 
 
@@ -439,7 +252,7 @@ LLM_TEMPERATURE = _load_llm_temperature()
 LLM_MAX_TOKENS = _load_llm_max_tokens()
 LLM_THINKING_PARAM = _parse_thinking_env(os.getenv("TRADEBOT_LLM_THINKING"))
 LLM_API_BASE_URL = _load_llm_api_base_url()
-LLM_API_KEY = _load_llm_api_key()
+LLM_API_KEY = _load_llm_api_key(OPENROUTER_API_KEY)
 LLM_API_TYPE = _load_llm_api_type()
 
 # Indicator settings
@@ -460,9 +273,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-for warning_msg in EARLY_ENV_WARNINGS:
-    logging.warning(warning_msg)
-EARLY_ENV_WARNINGS.clear()
+emit_early_env_warnings()
 
 def _resolve_risk_free_rate() -> float:
     """Determine the annualized risk-free rate used in Sortino calculations."""
@@ -584,193 +395,6 @@ def get_binance_client() -> Optional[Client]:
 
     return client
 
-class BinanceMarketDataClient:
-    def __init__(self, binance_client: Client) -> None:
-        self._client = binance_client
-
-    def get_klines(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
-        return self._client.get_klines(symbol=symbol, interval=interval, limit=limit)
-
-    def get_funding_rate_history(self, symbol: str, limit: int) -> List[float]:
-        try:
-            hist = self._client.futures_funding_rate(symbol=symbol, limit=limit)
-        except Exception as exc:
-            logging.debug("Funding rate history unavailable for %s: %s", symbol, exc)
-            return []
-        rates: List[float] = []
-        if hist:
-            for entry in hist:
-                if not isinstance(entry, dict):
-                    continue
-                value = entry.get("fundingRate")
-                try:
-                    rates.append(float(value))
-                except (TypeError, ValueError):
-                    continue
-        return rates
-
-    def get_open_interest_history(self, symbol: str, limit: int) -> List[float]:
-        try:
-            hist = self._client.futures_open_interest_hist(symbol=symbol, period="5m", limit=limit)
-        except Exception as exc:
-            logging.debug("Open interest history unavailable for %s: %s", symbol, exc)
-            return []
-        values: List[float] = []
-        if hist:
-            for entry in hist:
-                if not isinstance(entry, dict):
-                    continue
-                value = entry.get("sumOpenInterest")
-                try:
-                    values.append(float(value))
-                except (TypeError, ValueError):
-                    continue
-        return values
-
-class BackpackMarketDataClient:
-    def __init__(self, base_url: str) -> None:
-        base = (base_url or "https://api.backpack.exchange").strip()
-        if not base:
-            base = "https://api.backpack.exchange"
-        self._base_url = base.rstrip("/")
-        self._session = requests.Session()
-        self._timeout = 10.0
-
-    @staticmethod
-    def _normalize_symbol(symbol: str) -> str:
-        raw = (symbol or "").strip().upper()
-        if not raw:
-            return raw
-        # Already a Backpack-style symbol like BTC_USDC_PERP
-        if "_" in raw:
-            return raw
-        # Common case: Binance-style future/spot symbol like BTCUSDT
-        if raw.endswith("USDT") and len(raw) > 4:
-            base = raw[:-4]
-            return f"{base}_USDC_PERP"
-        return raw
-
-    def _get_mark_price_entry(self, symbol: str) -> Optional[Dict[str, Any]]:
-        normalized = self._normalize_symbol(symbol)
-        url = f"{self._base_url}/api/v1/markPrices"
-        params: Dict[str, Any] = {}
-        if normalized:
-            params["symbol"] = normalized
-        try:
-            response = self._session.get(url, params=params, timeout=self._timeout)
-            data = response.json()
-        except Exception as exc:
-            logging.debug("Backpack markPrices request failed for %s: %s", normalized or symbol, exc)
-            return None
-        if isinstance(data, dict):
-            return data
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and (not normalized or item.get("symbol") == normalized):
-                    return item
-        return None
-
-    def get_klines(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
-        normalized = self._normalize_symbol(symbol)
-        now_s = int(time.time())
-        seconds_per_bar = _INTERVAL_TO_SECONDS.get(interval, 60)
-        lookback_seconds = max(limit, 1) * seconds_per_bar
-        params: Dict[str, Any] = {
-            "symbol": normalized,
-            "interval": interval,
-            "startTime": now_s - lookback_seconds,
-        }
-        url = f"{self._base_url}/api/v1/klines"
-        try:
-            response = self._session.get(url, params=params, timeout=self._timeout)
-            data = response.json()
-        except Exception as exc:
-            logging.warning("Backpack klines request failed for %s: %s", symbol, exc)
-            return []
-        if response.status_code != 200:
-            logging.warning(
-                "Backpack klines HTTP %s for %s with params %s: %s",
-                response.status_code,
-                normalized,
-                params,
-                data,
-            )
-            return []
-        if not isinstance(data, list):
-            return []
-        rows: List[List[Any]] = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            start_val = item.get("start")
-            end_val = item.get("end")
-            open_val = item.get("open")
-            high_val = item.get("high")
-            low_val = item.get("low")
-            close_val = item.get("close")
-            volume_val = item.get("volume")
-            quote_volume = item.get("quoteVolume")
-            trades = item.get("trades")
-            row: List[Any] = [
-                start_val,
-                open_val,
-                high_val,
-                low_val,
-                close_val,
-                volume_val,
-                end_val,
-                quote_volume,
-                trades,
-                None,
-                None,
-                None,
-            ]
-            rows.append(row)
-        return rows
-
-    def get_funding_rate_history(self, symbol: str, limit: int) -> List[float]:
-        entry = self._get_mark_price_entry(symbol)
-        if not entry:
-            return []
-        value = entry.get("fundingRate")
-        try:
-            rate = float(value)
-        except (TypeError, ValueError):
-            return []
-        return [rate]
-
-    def get_open_interest_history(self, symbol: str, limit: int) -> List[float]:
-        normalized = self._normalize_symbol(symbol)
-        url = f"{self._base_url}/api/v1/openInterest"
-        params: Dict[str, Any] = {}
-        if normalized:
-            params["symbol"] = normalized
-        try:
-            response = self._session.get(url, params=params, timeout=self._timeout)
-            data = response.json()
-        except Exception as exc:
-            logging.debug("Backpack open interest request failed for %s: %s", symbol, exc)
-            return []
-        items: List[Any]
-        if isinstance(data, dict):
-            items = [data]
-        elif isinstance(data, list):
-            items = data
-        else:
-            items = []
-        values: List[float] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            value = item.get("openInterest")
-            try:
-                values.append(float(value))
-            except (TypeError, ValueError):
-                continue
-        if not values:
-            return []
-        return [values[-1]]
-
 def get_market_data_client() -> Optional[Any]:
     global _market_data_client
     if _market_data_client is not None:
@@ -843,49 +467,14 @@ last_btc_price: Optional[float] = None
 
 def init_csv_files() -> None:
     """Initialize CSV files with headers."""
-    if not STATE_CSV.exists():
-        with open(STATE_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(STATE_COLUMNS)
-    else:
-        try:
-            df = pd.read_csv(STATE_CSV)
-        except Exception as exc:
-            logging.warning("Unable to load %s for schema check: %s", STATE_CSV, exc)
-        else:
-            if list(df.columns) != STATE_COLUMNS:
-                for column in STATE_COLUMNS:
-                    if column not in df.columns:
-                        df[column] = np.nan
-                try:
-                    df = df[STATE_COLUMNS]
-                except KeyError:
-                    # Fall back to writing header only if severe mismatch
-                    df = pd.DataFrame(columns=STATE_COLUMNS)
-                df.to_csv(STATE_CSV, index=False)
-    
-    if not TRADES_CSV.exists():
-        with open(TRADES_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp', 'coin', 'action', 'side', 'quantity', 'price',
-                'profit_target', 'stop_loss', 'leverage', 'confidence',
-                'pnl', 'balance_after', 'reason'
-            ])
-    
-    if not DECISIONS_CSV.exists():
-        with open(DECISIONS_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp', 'coin', 'signal', 'reasoning', 'confidence'
-            ])
-
-    if not MESSAGES_CSV.exists():
-        with open(MESSAGES_CSV, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                'timestamp', 'direction', 'role', 'content', 'metadata'
-            ])
+    _init_csv_files_for_paths(
+        STATE_CSV,
+        TRADES_CSV,
+        DECISIONS_CSV,
+        MESSAGES_CSV,
+        MESSAGES_RECENT_CSV,
+        STATE_COLUMNS,
+    )
 
 def get_btc_benchmark_price() -> Optional[float]:
     """Fetch the current BTC/USDT price for benchmarking."""
@@ -1189,20 +778,13 @@ def load_state() -> None:
 
 def save_state() -> None:
     """Persist current balance, open positions, and iteration counter."""
-    try:
-        with open(STATE_JSON, "w") as f:
-            json.dump(
-                {
-                    "balance": balance,
-                    "positions": positions,
-                    "iteration": iteration_counter,
-                    "updated_at": get_current_time().isoformat(),
-                },
-                f,
-                indent=2,
-            )
-    except Exception as e:
-        logging.error("Failed to save state to %s: %s", STATE_JSON, e, exc_info=True)
+    payload = {
+        "balance": balance,
+        "positions": positions,
+        "iteration": iteration_counter,
+        "updated_at": get_current_time().isoformat(),
+    }
+    _save_state_to_json(STATE_JSON, payload)
 
 
 def reset_state(initial_balance: Optional[float] = None) -> None:
@@ -1220,24 +802,7 @@ def reset_state(initial_balance: Optional[float] = None) -> None:
 
 def load_equity_history() -> None:
     """Populate the in-memory equity history for performance calculations."""
-    equity_history.clear()
-    if not STATE_CSV.exists():
-        return
-    try:
-        df = pd.read_csv(STATE_CSV, usecols=["total_equity"])
-    except ValueError:
-        logging.warning(
-            "%s missing 'total_equity' column; Sortino ratio unavailable until new data is logged.",
-            STATE_CSV,
-        )
-        return
-    except Exception as exc:
-        logging.warning("Unable to load historical equity data: %s", exc)
-        return
-
-    values = pd.to_numeric(df["total_equity"], errors="coerce").dropna()
-    if not values.empty:
-        equity_history.extend(float(v) for v in values.tolist())
+    _load_equity_history_from_csv(STATE_CSV, equity_history)
 
 def register_equity_snapshot(total_equity: float) -> None:
     """Append the latest equity to the history if it is a finite value."""
@@ -2213,35 +1778,11 @@ def calculate_sortino_ratio(
         period_seconds: Average period between snapshots (used to annualize).
         risk_free_rate: Annualized risk-free rate (decimal form).
     """
-    values = [float(v) for v in equity_values if isinstance(v, (int, float, np.floating)) and np.isfinite(v)]
-    if len(values) < 2:
-        return None
-
-    returns = np.diff(values) / np.array(values[:-1], dtype=float)
-    returns = returns[np.isfinite(returns)]
-    if returns.size == 0:
-        return None
-
-    period_seconds = float(period_seconds) if period_seconds and period_seconds > 0 else CHECK_INTERVAL
-    periods_per_year = (365 * 24 * 60 * 60) / period_seconds
-    if not np.isfinite(periods_per_year) or periods_per_year <= 0:
-        return None
-
-    per_period_rf = risk_free_rate / periods_per_year
-    excess_return = returns.mean() - per_period_rf
-    if not np.isfinite(excess_return):
-        return None
-
-    downside_diff = np.minimum(returns - per_period_rf, 0.0)
-    downside_squared = downside_diff ** 2
-    downside_deviation = np.sqrt(np.mean(downside_squared))
-    if downside_deviation <= 0 or not np.isfinite(downside_deviation):
-        return None
-
-    sortino = (excess_return / downside_deviation) * np.sqrt(periods_per_year)
-    if not np.isfinite(sortino):
-        return None
-    return float(sortino)
+    return _metrics_calculate_sortino_ratio(
+        equity_values,
+        period_seconds,
+        risk_free_rate,
+    )
 
 def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> None:
     """Execute entry trade."""
