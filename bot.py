@@ -45,6 +45,7 @@ from config.settings import (
     OPENROUTER_API_KEY, SYSTEM_PROMPT_SOURCE, describe_system_prompt_source,
     DEFAULT_TRADING_RULES_PROMPT, DEFAULT_LLM_MODEL,
     TRADING_BACKEND, BINANCE_FUTURES_LIVE, BACKPACK_FUTURES_LIVE,
+    RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT,
 )
 
 
@@ -76,7 +77,11 @@ from core.state import (
     increment_iteration_counter, clear_iteration_messages, reset_state,
     set_last_btc_price, get_last_btc_price, escape_markdown,
     increment_invocation_count,
+    load_state as _core_load_state,
+    save_state as _core_save_state,
+    risk_control_state as _risk_control_state,
 )
+from core.risk_control import check_risk_limits
 
 # Module-level state references (for test compatibility)
 positions = _core_state.positions
@@ -212,22 +217,18 @@ def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def load_state() -> None:
-    """Load persisted balance and positions."""
+    """Load persisted balance, positions, and risk control state.
+    
+    Uses core.state.load_state() as the unified entry point to ensure
+    all state (including risk_control) is loaded consistently.
+    """
     global balance, iteration_counter
-    if not STATE_JSON.exists():
-        return
-    try:
-        new_balance, new_positions, new_iteration = load_state_from_json(
-            STATE_JSON, START_CAPITAL, TAKER_FEE_RATE,
-        )
-        balance = new_balance
-        positions.clear()
-        positions.update(new_positions)
-        iteration_counter = new_iteration
-        _core_state.balance = balance
-        _core_state.iteration_counter = new_iteration
-    except Exception as e:
-        logging.error("Failed to load state: %s", e)
+    _core_load_state()
+    # Sync module-level references with core.state
+    balance = _core_state.balance
+    positions.clear()
+    positions.update(_core_state.positions)
+    iteration_counter = _core_state.iteration_counter
 
 
 def load_equity_history() -> None:
@@ -245,15 +246,17 @@ def load_equity_history() -> None:
 
 
 def save_state() -> None:
-    """Persist current state."""
-    # Sync module-level iteration_counter to core.state before saving
+    """Persist current state including risk control.
+    
+    Uses core.state.save_state() as the unified entry point to ensure
+    all state (including risk_control) is saved consistently.
+    """
+    # Sync module-level state to core.state before saving
+    _core_state.balance = balance
+    _core_state.positions.clear()
+    _core_state.positions.update(positions)
     _core_state.iteration_counter = iteration_counter
-    save_state_to_json(STATE_JSON, {
-        "balance": balance,
-        "positions": positions,
-        "iteration": iteration_counter,
-        "updated_at": get_current_time().isoformat(),
-    })
+    _core_save_state()
 
 
 def log_ai_message(direction: str, role: str, content: str, metadata: Optional[Dict] = None) -> None:
@@ -542,6 +545,19 @@ def main() -> None:
     logging.info("LLM model configured: %s", LLM_MODEL_NAME)
     logging.info("Market data backend: %s", MARKET_DATA_BACKEND)
     
+    # Log risk control configuration and state
+    logging.info(
+        "Risk control config: enabled=%s, daily_loss_limit_enabled=%s, daily_loss_limit_pct=%.1f%%",
+        RISK_CONTROL_ENABLED,
+        DAILY_LOSS_LIMIT_ENABLED,
+        DAILY_LOSS_LIMIT_PCT,
+    )
+    logging.info(
+        "Risk control state loaded: kill_switch_active=%s, daily_loss_pct=%.2f%%",
+        _core_state.risk_control_state.kill_switch_active,
+        _core_state.risk_control_state.daily_loss_pct,
+    )
+    
     while True:
         try:
             _run_iteration()
@@ -572,6 +588,14 @@ def _run_iteration() -> None:
     print(f"\n{Fore.CYAN}{'='*20}")
     print(f"{Fore.CYAN}Iteration {iteration} - {get_current_time().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{Fore.CYAN}{'='*20}\n")
+    
+    # Risk control check (before market data and LLM calls)
+    check_risk_limits(
+        risk_control_state=_core_state.risk_control_state,
+        total_equity=calculate_total_equity(),
+        iteration_time=get_current_time(),
+        risk_control_enabled=RISK_CONTROL_ENABLED,
+    )
     
     check_stop_loss_take_profit()
     

@@ -1,0 +1,234 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.1</epicId>
+    <storyId>7.1.4</storyId>
+    <title>集成风控状态到主循环</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T11:22:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-1-4-集成风控状态到主循环.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>system</asA>
+    <iWant>risk control state to be integrated into the main trading loop and checked on every iteration</iWant>
+    <soThat>risk limits can be enforced in real-time and survive restarts</soThat>
+    <tasks>
+      <![CDATA[
+- Task 1 – 统一状态加载与保存路径（AC1, AC3, AC4）  
+  - 1.1 复用 core.state.load_state() / core.state.save_state() 或等效封装，作为交易主流程的唯一状态入口，避免在 bot.py 中直接调用 core.persistence.load_state_from_json() / save_state_to_json()。  
+  - 1.2 确保统一入口在读写时总是包含 risk_control 字段，并与 RiskControlState 保持结构一致（即便当前风控逻辑尚未启用）。  
+  - 1.3 确保所有使用到余额、持仓、迭代计数器的模块（包括 bot.py 与 core/trading_loop.py）在集成后仍通过 core.state 提供的 API 访问状态，不引入新的全局副本。
+
+- Task 2 – 在 _run_iteration() 中插入风控检查入口（AC2, AC3）  
+  - 2.1 在 _run_iteration() 的早期阶段（日志头部打印之后、行情与 LLM 调用之前）插入对风控检查入口的调用。  
+  - 2.2 风控检查入口函数的签名预留当前账户总权益、迭代时间等参数，以便后续 Epic 7.2 / 7.3 直接利用（例如：Kill-Switch、每日亏损限制）。  
+  - 2.3 当 RISK_CONTROL_ENABLED=False 时，风控入口直接返回且记录一条 INFO 日志说明「风控已显式关闭」。
+
+- Task 3 – 保持状态一致性并处理错误路径（AC1, AC3）  
+  - 3.1 验证：状态文件缺失或损坏时，风控状态回退到 RiskControlState() 默认值，同时余额与持仓回退到安全默认（例如 START_CAPITAL 与空持仓），并记录错误日志。  
+  - 3.2 确认：在一次迭代中发生异常并由主循环捕获时，save_state() 仍会被调用，从而持久化最新的风控状态。  
+  - 3.3 确认：save_state() 的实现继续使用原子写入（由 Story 7.1.3 引入），不引入数据损坏风险。
+
+- Task 4 – 新增 / 扩展测试（AC3, AC5）  
+  - 4.1 在 tests/test_risk_control_integration.py 中新增用例：模拟若干迭代后重启 Bot，验证风控状态被正确恢复。  
+  - 4.2 为 _run_iteration() 增加集成测试或高层测试，验证风控检查入口在每次迭代开始时被调用一次。  
+  - 4.3 补充日志相关断言（如使用 caplog），验证启动时输出风控配置摘要，异常路径不会导致未捕获异常退出。
+      ]]>
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    <![CDATA[
+1. AC1 – 主循环使用统一的状态入口并包含风控状态：交易主流程在启动时通过单一入口加载状态（推荐使用 core.state.load_state() 或等效封装），在迭代过程中通过统一的保存函数（例如 core.state.save_state() 或等效封装）持久化状态；portfolio_state.json 中始终包含 risk_control 顶级字段，其结构与 RiskControlState.to_dict() 一致；当状态文件缺失或损坏时，风控状态会回退到安全默认值，不阻止 Bot 启动（与 Tech Spec AC-7.1.3 对齐）。
+2. AC2 – _run_iteration() 在开始阶段调用风控检查入口：在每次 _run_iteration() 开始阶段（在行情拉取 / 策略分析 / LLM 调用之前），调用位于 core 层或 core.risk_control 相关模块中的风控检查入口函数（例如 check_risk_limits(...) 或等效函数）；当 RISK_CONTROL_ENABLED=False 时，风控检查入口会被跳过或退化为 no-op，并在启动日志中明确记录当前风控总开关状态；当前 Story 仅要求预留统一入口与调用时机，具体 Kill-Switch / 每日亏损逻辑由后续 Epic 7.2 / 7.3 实现。
+3. AC3 – 风控状态在迭代生命周期内被一致地加载与保存（PRD FR2/FR4 映射）：在 Bot 启动时，风控状态从 portfolio_state.json 中恢复一次，并与内存中的交易状态（余额、持仓、迭代计数器）保持一致；每次迭代结束时，风控状态与交易状态一并被保存，确保在异常退出 / 重启后能恢复到最近一次迭代的风控状态；单元 / 集成测试覆盖有 risk_control 字段的状态文件、无 risk_control 字段的旧文件以及多次迭代后重启 Bot 的场景。
+4. AC4 – 与现有主循环与架构分层保持一致：集成方式与 docs/architecture/03-data-flow.md / 06-project-structure-and-mapping.md 中的分层一致，风控检查被插入在「数据输入阶段」之后、「策略分析阶段」之前，且实现位于 core/ 层；不在 strategy/、llm/ 或 execution/ 层中直接访问状态文件路径或环境变量，所有风控相关状态读写通过 core.state / core.persistence 提供的接口完成；现有 tests 目录下关于交易循环与状态管理的测试在启用风控集成后仍然通过（允许根据需要更新期望值，但不改变外部行为契约）。
+5. AC5 – 测试与可观测性：在 tests/test_risk_control_integration.py（或等价文件）中新增测试，验证主循环在每次迭代开始时至少调用一次风控检查入口（可通过 monkeypatch 计数或日志断言实现），当 RISK_CONTROL_ENABLED 为 False 时风控入口被跳过但主循环仍能正常运行；日志中在启动阶段输出风控配置与当前状态摘要（例如是否启用、kill_switch_active 初始值等），支持后续问题排查（对应 PRD 的可观测性要求）。
+    ]]>
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/sprint-artifacts/tech-spec-epic-7-1.md</path>
+        <title>Epic 技术规格: 风控状态管理基础设施</title>
+        <section>Acceptance Criteria (Authoritative)</section>
+        <snippet>Tech Spec 为 Epic 7.1 定义了 AC-7.1.1~7.1.4，其中 AC-7.1.4 明确要求在 bot.py 中集成 RiskControlState 到主循环，并在 _run_iteration() 开始阶段执行风控检查。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Story 7.1.4: 集成风控状态到主循环</section>
+        <snippet>Epic 文档中 Story 7.1.4 要求在主循环中集成风控状态检查，使用 RiskControlState 作为统一状态模型，并为后续 Kill-Switch 与每日亏损限制功能预留检查入口。</snippet>
+      </doc>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>功能需求 - 风控状态管理</section>
+        <snippet>PRD 的 FR1–FR4 要求系统维护全局风控状态，在每次迭代开始时加载、结束时保存，并将风控状态持久化到 portfolio_state.json 的 risk_control 字段，在 Bot 启动时恢复上次风控状态。</snippet>
+      </doc>
+      <doc>
+        <path>docs/prd.md</path>
+        <title>DeepSeek Paper Trading Bot 产品需求文档</title>
+        <section>4.2 风险控制与资金管理</section>
+        <snippet>基础 PRD 描述了交易主循环中的风险控制目标，包括单笔风险限制、强制止损/止盈和退出规则，为在主循环中集成系统级风控检查提供业务背景。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/03-data-flow.md</path>
+        <title>架构分片 03 - 数据流</title>
+        <section>3.1 实时交易路径</section>
+        <snippet>数据流文档展示了从数据输入、策略分析、LLM 决策到交易执行和状态持久化的完整链路，为确定在何处插入风控检查（数据输入之后、策略分析之前）提供指引。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构分片 06 - 项目结构与源码树</title>
+        <section>6.2 PRD 功能块到架构组件的映射</section>
+        <snippet>该文档将「数据持久化与日志」映射到 core/state.py 与 core/persistence.py，将交易主循环入口映射到 bot.py / core/trading_loop.py，是确定风控集成落点的关键参考。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片 07 - 实现模式与一致性规则</title>
+        <section>7.3 数据与格式模式 / 7.5 生命周期与错误处理</section>
+        <snippet>实现模式文档约定状态与日志使用 ISO 8601 UTC 时间戳，交易循环生命周期的标准步骤以及错误处理原则，要求在增加风控检查时保持延迟可控和错误可恢复。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <artifact>
+        <path>bot.py</path>
+        <kind>entrypoint</kind>
+        <symbol>main, _run_iteration</symbol>
+        <lines>483-608</lines>
+        <reason>交易主入口与单次迭代函数所在文件，本 Story 需要在 _run_iteration() 开始阶段集成风控检查入口，并统一使用 core.state 提供的状态加载/保存。</reason>
+      </artifact>
+      <artifact>
+        <path>core/state.py</path>
+        <kind>state-module</kind>
+        <symbol>load_state, save_state, risk_control_state</symbol>
+        <lines>65-151</lines>
+        <reason>管理全局交易状态与 RiskControlState 的加载/保存，是主循环应当复用的唯一状态入口，避免在其他模块中直接读写 JSON 文件。</reason>
+      </artifact>
+      <artifact>
+        <path>core/trading_loop.py</path>
+        <kind>loop-module</kind>
+        <symbol>calculate_total_equity, display_portfolio_summary, check_stop_loss_take_profit</symbol>
+        <lines>144-198, 769-783, 805-858</lines>
+        <reason>封装交易循环内的总权益计算、SL/TP 检查和组合摘要显示逻辑，风控检查需要在调用这些函数之前运行，并依赖相同的状态访问模式。</reason>
+      </artifact>
+      <artifact>
+        <path>core/risk_control.py</path>
+        <kind>core-module</kind>
+        <symbol>RiskControlState</symbol>
+        <lines>13-68</lines>
+        <reason>定义 Kill-Switch 与每日亏损限制等风控特性的核心状态结构，本 Story 集成主循环时需要围绕该结构维护一致的生命周期。</reason>
+      </artifact>
+      <artifact>
+        <path>config/settings.py</path>
+        <kind>config-module</kind>
+        <symbol>RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT</symbol>
+        <lines>592-610</lines>
+        <reason>集中管理风控相关环境变量配置和默认值，主循环中的风控检查入口需要根据这些配置决定是否启用或跳过检查。</reason>
+      </artifact>
+      <artifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>test-module</kind>
+        <symbol>RiskControlPersistenceIntegrationTests</symbol>
+        <lines>19-168</lines>
+        <reason>现有集成测试验证 RiskControlState 在 JSON 层面的持久化与恢复，本 Story 需要在此基础上增加主循环级别的集成测试。</reason>
+      </artifact>
+    </code>
+
+    <dependencies>
+      <ecosystem name="python">
+        <package name="python-binance" version="1.0.19" />
+        <package name="pandas" version="2.2.3" />
+        <package name="numpy" version="2.1.3" />
+        <package name="requests" version="2.31.0" />
+        <package name="python-dotenv" version="1.0.0" />
+        <package name="colorama" version="0.4.6" />
+        <package name="streamlit" version="1.38.0" />
+        <package name="hyperliquid-python-sdk" version=">=0.9.0" />
+        <package name="eth-account" version=">=0.10.0" />
+        <package name="ccxt" version="unspecified" />
+        <package name="streamlit-autorefresh" version="unspecified" />
+        <package name="cryptography" version="unspecified" />
+      </ecosystem>
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    <![CDATA[
+- 主循环必须通过 core.state 提供的统一入口加载与保存状态，禁止在 bot.py 或其他模块中直接调用 core.persistence.load_state_from_json()/save_state_to_json() 或手动操作 JSON 文件。
+- 风控检查应插入在数据输入之后、策略分析和 LLM 决策之前，且不会显著增加每次迭代的延迟（参考 PRD 风控增强 NFR1 & NFR3）。
+- 新增风控检查不得改变现有交易循环的对外行为契约（包括 CSV/JSON 结构与日志格式），现有测试应在必要调整期望值后继续全部通过。
+- RiskControlState 的生命周期需要与交易状态保持一致：在启动时从 portfolio_state.json 恢复，在每次迭代结束时与其他状态一起保存，错误场景下回退到安全默认状态而非崩溃进程。
+- 任何新逻辑都必须遵守 architecture/07 中的错误处理与日志模式：网络或 I/O 错误记录为 warning/error，并允许下一轮迭代恢复。
+    ]]>
+  </constraints>
+
+  <interfaces>
+    <interface>
+      <name>RiskControlState</name>
+      <kind>dataclass</kind>
+      <signature>class RiskControlState(kill_switch_active: bool, kill_switch_reason: Optional[str], kill_switch_triggered_at: Optional[str], daily_start_equity: Optional[float], daily_start_date: Optional[str], daily_loss_pct: float, daily_loss_triggered: bool)</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>load_state</name>
+      <kind>function</kind>
+      <signature>def load_state() -&gt; None</signature>
+      <path>core/state.py</path>
+    </interface>
+    <interface>
+      <name>save_state</name>
+      <kind>function</kind>
+      <signature>def save_state() -&gt; None</signature>
+      <path>core/state.py</path>
+    </interface>
+    <interface>
+      <name>main</name>
+      <kind>function</kind>
+      <signature>def main() -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+    <interface>
+      <name>_run_iteration</name>
+      <kind>function</kind>
+      <signature>def _run_iteration() -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+    <interface>
+      <name>check_stop_loss_take_profit</name>
+      <kind>function</kind>
+      <signature>def check_stop_loss_take_profit(fetch_market_data_fn: Callable, execute_close_fn: Callable, hyperliquid_is_live: bool) -&gt; None</signature>
+      <path>core/trading_loop.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards>
+      <![CDATA[
+- 所有自动化测试统一放在 tests/ 目录下，使用 pytest/unittest 风格的 test_*.py 文件，并遵循现有项目的覆盖率目标（architecture 07）。
+- RiskControlState 有专门的单元测试文件 tests/test_risk_control.py，覆盖默认值、序列化/反序列化与 roundtrip 行为。
+- 风控配置有专门的单元测试文件 tests/test_risk_control_config.py，覆盖默认值、环境变量覆盖与非法输入回退逻辑。
+- 本 Story 需要在 tests/test_risk_control_integration.py 基础上扩展集成测试，验证主循环集成风险控制状态后的 end-to-end 行为。
+      ]]>
+    </standards>
+    <locations>
+      <![CDATA[
+- tests/test_risk_control.py
+- tests/test_risk_control_config.py
+- tests/test_risk_control_integration.py
+      ]]>
+    </locations>
+    <ideas>
+      <![CDATA[
+- 针对 AC1/AC3：通过 monkeypatch 将 core.state.STATE_JSON 指向临时文件，调用统一的 load_state()/save_state()，断言 portfolio_state.json 中包含 risk_control 顶级字段并与 RiskControlState.to_dict() 一致，且重启后风控状态与交易状态一起被正确恢复。
+- 针对 AC2：为 _run_iteration() 编写集成测试，使用 monkeypatch 注入一个计数器风控检查函数，验证每次迭代开始时恰好调用一次；当 RISK_CONTROL_ENABLED=False 时，计数器保持为 0 而主循环仍然完成迭代。
+- 针对 AC4：运行现有与交易循环/状态管理相关的测试（如 tests/test_ai_and_backtest.py、tests/test_entry_and_close.py），确认在集成风控检查后仍全部通过，必要时只调整断言中关于日志或状态结构的细节。
+- 针对 AC5：使用 caplog 捕获启动日志，验证 Risk control config 与 Risk control state loaded 等关键日志存在，并在异常路径下记录错误而不是让测试进程崩溃。
+      ]]>
+    </ideas>
+  </tests>
+</story-context>

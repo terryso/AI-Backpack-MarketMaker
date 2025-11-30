@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,6 +25,7 @@ from core.persistence import (
     save_state_to_json as _save_state_to_json,
     load_state_from_json as _load_state_from_json,
 )
+from core.risk_control import RiskControlState
 
 # ──────────────────────── GLOBAL STATE ─────────────────────
 balance: float = START_CAPITAL
@@ -34,6 +36,7 @@ iteration_counter: int = 0
 equity_history: List[float] = []
 current_iteration_messages: List[str] = []
 last_btc_price: Optional[float] = None
+risk_control_state: RiskControlState = RiskControlState()
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
@@ -64,10 +67,11 @@ BOT_START_TIME = get_current_time()
 # ──────────────────────── STATE MANAGEMENT ─────────────────────
 def load_state() -> None:
     """Load persisted balance and positions if available."""
-    global balance, positions, iteration_counter
+    global balance, positions, iteration_counter, risk_control_state
 
     if not STATE_JSON.exists():
         logging.info("No existing state file found; starting fresh.")
+        risk_control_state = RiskControlState()
         return
 
     try:
@@ -89,6 +93,49 @@ def load_state() -> None:
         logging.error("Failed to load state from %s: %s", STATE_JSON, e, exc_info=True)
         balance = START_CAPITAL
         positions = {}
+        iteration_counter = 0
+        risk_control_state = RiskControlState()
+        return
+
+    try:
+        with open(STATE_JSON, "r") as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error("Failed to load risk control state from %s: %s", STATE_JSON, e, exc_info=True)
+        risk_control_state = RiskControlState()
+        return
+
+    raw_risk_control = data.get("risk_control")
+    if isinstance(raw_risk_control, dict):
+        try:
+            risk_control_state = RiskControlState.from_dict(raw_risk_control)
+        except Exception as e:
+            logging.error(
+                "Failed to parse risk control state from %s: %s",
+                STATE_JSON,
+                e,
+                exc_info=True,
+            )
+            risk_control_state = RiskControlState()
+    else:
+        if raw_risk_control is not None:
+            logging.warning(
+                "Unexpected 'risk_control' field in %s; expected dict but got %s. Using default risk control state.",
+                STATE_JSON,
+                type(raw_risk_control).__name__,
+            )
+        else:
+            logging.info(
+                "State file %s missing 'risk_control' field; using default risk control state.",
+                STATE_JSON,
+            )
+        risk_control_state = RiskControlState()
+
+    logging.info(
+        "Risk control state loaded: kill_switch_active=%s, daily_loss_pct=%.2f%%",
+        risk_control_state.kill_switch_active,
+        risk_control_state.daily_loss_pct,
+    )
 
 
 def save_state() -> None:
@@ -98,6 +145,7 @@ def save_state() -> None:
         "positions": positions,
         "iteration": iteration_counter,
         "updated_at": get_current_time().isoformat(),
+        "risk_control": risk_control_state.to_dict(),
     }
     _save_state_to_json(STATE_JSON, payload)
 

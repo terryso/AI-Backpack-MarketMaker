@@ -463,6 +463,18 @@ def test_risk_control_env_override():
 - 分支覆盖率 > 85%
 - 所有公共 API 有对应测试
 
+## Post-Review Follow-ups (AI)
+
+- **[Medium] 明确环境变量与持久化状态的优先级策略**  
+  - 在后续 Epic（优先建议 Epic 7.2）中补齐 `KILL_SWITCH` 等环境变量与持久化 `RiskControlState` 之间的冲突解决规则，例如：当环境变量显式开启 Kill-Switch 时，应优先于状态文件中的关闭标记。  
+  - 相关实现点：`config/settings.py`（配置层）、`core/state.py`（状态加载层）、`core/risk_control.py` / 后续 Kill-Switch 逻辑（行为层）。
+- **[Low] 清理风控模块中不必要的 TYPE_CHECKING 引用**  
+  - 在合适的后续 Story 中移除 `core/risk_control.py` 中对自身模块的 `TYPE_CHECKING` 引用，以减少类型声明噪音。  
+  - 不影响现有行为，属于代码洁净度改进。
+- **[Low] 统一风控相关日志格式与位置**  
+  - 在后续 Epic 7.2/7.3 实现具体风控逻辑时，一并梳理启动、迭代与异常路径上的风控相关日志（字段顺序、日志级别、消息前缀），提高可观测性一致性。  
+  - 相关实现点：`core/state.py`、`bot.py` 以及未来的 Kill-Switch / 每日亏损逻辑。
+
 ---
 
 _本技术规格为 Epic 7.1 的实现提供详细设计指导，后续 Story 实现应严格遵循本规格。_

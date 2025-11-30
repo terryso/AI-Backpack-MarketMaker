@@ -53,9 +53,9 @@ development_status:
   # === Epic 7.1: 风控状态管理基础设施 ===
   epic-7-1: contexted
   7-1-1-定义-riskcontrolstate-数据结构: done
-  7-1-2-添加风控相关环境变量: review
-  7-1-3-实现风控状态持久化: backlog
-  7-1-4-集成风控状态到主循环: backlog
+  7-1-2-添加风控相关环境变量: done
+  7-1-3-实现风控状态持久化: done
+  7-1-4-集成风控状态到主循环: done
   epic-7-1-retrospective: optional
 
   # === Epic 7.2: Kill-Switch 核心功能 ===

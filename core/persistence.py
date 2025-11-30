@@ -131,11 +131,30 @@ def save_state_to_json(state_json: Path, payload: Dict[str, Any]) -> None:
     This mirrors the file-writing and logging behaviour of bot.save_state while
     keeping the caller responsible for constructing the payload.
     """
+    tmp_path = state_json.with_suffix(".tmp")
+
     try:
-        with open(state_json, "w") as f:
+        with open(tmp_path, "w") as f:
             json.dump(payload, f, indent=2)
+
+        tmp_path.replace(state_json)
     except Exception as exc:  # pragma: no cover - defensive logging only
-        logging.error("Failed to save state to %s: %s", state_json, exc, exc_info=True)
+        logging.error(
+            "Failed to save state to %s atomically: %s",
+            state_json,
+            exc,
+            exc_info=True,
+        )
+
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:  # pragma: no cover - defensive logging only
+            logging.error(
+                "Failed to clean up temporary state file %s after error",
+                tmp_path,
+                exc_info=True,
+            )
 
 
 def load_state_from_json(

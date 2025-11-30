@@ -173,6 +173,25 @@ class TestSaveStateToJson:
             loaded = json.load(f)
         assert loaded == {"new": "data"}
 
+    def test_atomic_write_preserves_original_on_error(self, tmp_path, monkeypatch):
+        """Should keep original file intact if write fails."""
+        json_path = tmp_path / "state.json"
+        original = {"balance": 100, "positions": {"BTC": {"side": "long"}}}
+        json_path.write_text(json.dumps(original))
+
+        def failing_dump(*args, **kwargs):  # pragma: no cover - behaviour verified via state
+            raise RuntimeError("json dump failed")
+
+        monkeypatch.setattr("core.persistence.json.dump", failing_dump)
+
+        save_state_to_json(json_path, {"balance": 200})
+
+        with open(json_path) as f:
+            loaded = json.load(f)
+
+        assert loaded == original
+        assert not json_path.with_suffix(".tmp").exists()
+
 
 class TestLoadStateFromJson:
     """Tests for load_state_from_json function."""
