@@ -1,5 +1,5 @@
 ---
-description: 'Transform PRD requirements into bite-sized stories organized into deliverable functional epics. This workflow takes a Product Requirements Document (PRD) and breaks it down into epics and user stories that can be easily assigned to development teams. It ensures that all functional requirements are captured in a structured format, making it easier for teams to understand and implement the necessary features.'
+description: 'Transform PRD requirements and Architecture decisions into comprehensive stories organized by user value. This workflow requires completed PRD + Architecture documents (UX recommended if UI exists) and breaks down requirements into implementation-ready epics and user stories that incorporate all available technical and design context. Creates detailed, actionable stories with complete acceptance criteria for development teams.'
 ---
 
 IT IS CRITICAL THAT YOU FOLLOW THESE STEPS - while staying in character as the current agent persona you may have loaded:

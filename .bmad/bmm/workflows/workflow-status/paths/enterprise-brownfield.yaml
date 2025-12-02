@@ -28,6 +28,7 @@ phases:
         optional: true
         agent: "analyst"
         command: "brainstorm-project"
+        note: "Uses core brainstorming workflow with project context template"
         included_by: "user_choice"
 
       - id: "research"
@@ -60,10 +61,10 @@ phases:
         agent: "pm"
         command: "validate-prd"
 
-      - id: "create-design"
+      - id: "create-ux-design"
         recommended: true
         agent: "ux-designer"
-        command: "create-design"
+        command: "create-ux-design"
         note: "Recommended - must integrate with existing UX patterns"
 
   - phase: 2
