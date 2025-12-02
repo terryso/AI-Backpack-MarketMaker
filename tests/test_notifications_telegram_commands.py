@@ -9,7 +9,7 @@ Tests cover:
 - AC3: Chat ID filtering and error handling
 - AC3: last_update_id / offset mechanism
 - AC1 (7.4.2): /kill command activates Kill-Switch
-- AC2 (7.4.2): /resume and /resume confirm two-step confirmation
+- AC2 (7.4.2): /resume deactivates Kill-Switch (while remaining compatible with "/resume confirm")
 - AC3 (7.4.2): Logging and audit
 - AC4 (7.4.2): Unit tests for /kill and /resume
 """
@@ -769,7 +769,7 @@ class TestHandleKillCommand:
         assert "Kill\\-Switch 已激活" in result.message
         assert "Manual trigger via Telegram" in result.message
         assert "3 个" in result.message
-        assert "/resume confirm" in result.message
+        assert "/resume" in result.message
     
     def test_kill_when_already_active(
         self, kill_command: TelegramCommand, active_state: RiskControlState
@@ -810,7 +810,7 @@ class TestHandleKillCommand:
 
 class TestHandleResumeCommand:
     """Tests for handle_resume_command function (Story 7.4.2 AC2)."""
-    
+
     @pytest.fixture
     def resume_command(self) -> TelegramCommand:
         """Create a sample /resume command without confirm."""
@@ -821,10 +821,10 @@ class TestHandleResumeCommand:
             message_id=43,
             raw_text="/resume",
         )
-    
+
     @pytest.fixture
     def resume_confirm_command(self) -> TelegramCommand:
-        """Create a sample /resume confirm command."""
+        """Create a sample legacy /resume confirm command (backward compatible)."""
         return TelegramCommand(
             command="resume",
             args=["confirm"],
@@ -832,7 +832,7 @@ class TestHandleResumeCommand:
             message_id=44,
             raw_text="/resume confirm",
         )
-    
+
     @pytest.fixture
     def active_state(self) -> RiskControlState:
         """Create a RiskControlState with Kill-Switch active."""
@@ -842,7 +842,7 @@ class TestHandleResumeCommand:
             kill_switch_triggered_at="2025-01-01T00:00:00+00:00",
             daily_loss_triggered=False,
         )
-    
+
     @pytest.fixture
     def inactive_state(self) -> RiskControlState:
         """Create a RiskControlState with Kill-Switch inactive."""
@@ -851,7 +851,7 @@ class TestHandleResumeCommand:
             kill_switch_reason=None,
             kill_switch_triggered_at=None,
         )
-    
+
     @pytest.fixture
     def daily_loss_state(self) -> RiskControlState:
         """Create a RiskControlState with daily loss triggered."""
@@ -862,58 +862,57 @@ class TestHandleResumeCommand:
             daily_loss_triggered=True,
             daily_loss_pct=-6.5,
         )
-    
-    def test_resume_without_confirm_prompts(
+
+    def test_resume_directly_deactivates_kill_switch(
         self, resume_command: TelegramCommand, active_state: RiskControlState
     ):
-        """Test that /resume without confirm returns prompt (AC2)."""
+        """/resume should directly deactivate Kill-Switch when allowed."""
         result = handle_resume_command(resume_command, active_state)
-        
-        assert result.success is True
-        assert result.state_changed is False
-        assert result.action == "RESUME_PENDING_CONFIRM"
-        assert "确认解除" in result.message
-        assert "/resume confirm" in result.message
-        assert active_state.kill_switch_active is True  # Unchanged
-    
-    def test_resume_confirm_deactivates_kill_switch(
-        self, resume_confirm_command: TelegramCommand, active_state: RiskControlState
-    ):
-        """Test that /resume confirm deactivates Kill-Switch (AC2)."""
-        result = handle_resume_command(resume_confirm_command, active_state)
-        
+
         assert result.success is True
         assert result.state_changed is True
         assert result.action == "KILL_SWITCH_DEACTIVATED"
         assert active_state.kill_switch_active is False
         assert active_state.kill_switch_reason == "telegram:/resume"
-    
-    def test_resume_confirm_returns_success_message(
+
+    def test_legacy_resume_confirm_also_deactivates(
         self, resume_confirm_command: TelegramCommand, active_state: RiskControlState
     ):
-        """Test that /resume confirm returns success message."""
+        """Legacy /resume confirm form should also deactivate Kill-Switch."""
         result = handle_resume_command(resume_confirm_command, active_state)
-        
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert result.action == "KILL_SWITCH_DEACTIVATED"
+        assert active_state.kill_switch_active is False
+        assert active_state.kill_switch_reason == "telegram:/resume"
+
+    def test_resume_returns_success_message(
+        self, resume_command: TelegramCommand, active_state: RiskControlState
+    ):
+        """Test that /resume returns success message."""
+        result = handle_resume_command(resume_command, active_state)
+
         assert "Kill\\-Switch 已解除" in result.message
         assert "交易功能已恢复正常" in result.message
-    
+
     def test_resume_when_not_active(
         self, resume_command: TelegramCommand, inactive_state: RiskControlState
     ):
         """Test that /resume when not active returns info message."""
         result = handle_resume_command(resume_command, inactive_state)
-        
+
         assert result.success is True
         assert result.state_changed is False
         assert result.action is None
         assert "当前未激活" in result.message
-    
-    def test_resume_confirm_blocked_by_daily_loss(
-        self, resume_confirm_command: TelegramCommand, daily_loss_state: RiskControlState
+
+    def test_resume_blocked_by_daily_loss(
+        self, resume_command: TelegramCommand, daily_loss_state: RiskControlState
     ):
-        """Test that /resume confirm is blocked when daily loss triggered (AC2)."""
-        result = handle_resume_command(resume_confirm_command, daily_loss_state)
-        
+        """Test that /resume is blocked when daily loss triggered (AC2)."""
+        result = handle_resume_command(resume_command, daily_loss_state)
+
         assert result.success is False
         assert result.state_changed is False
         assert result.action == "RESUME_BLOCKED_DAILY_LOSS"
@@ -921,35 +920,35 @@ class TestHandleResumeCommand:
         assert "每日亏损限制" in result.message
         assert "/reset_daily" in result.message
         assert daily_loss_state.kill_switch_active is True  # Unchanged
-    
-    def test_resume_confirm_with_force_bypasses_daily_loss(
-        self, resume_confirm_command: TelegramCommand, daily_loss_state: RiskControlState
+
+    def test_resume_with_force_bypasses_daily_loss(
+        self, resume_command: TelegramCommand, daily_loss_state: RiskControlState
     ):
-        """Test that /resume confirm with force=True bypasses daily loss check."""
-        result = handle_resume_command(resume_confirm_command, daily_loss_state, force=True)
-        
+        """Test that /resume with force=True bypasses daily loss check."""
+        result = handle_resume_command(resume_command, daily_loss_state, force=True)
+
         assert result.success is True
         assert result.state_changed is True
         assert result.action == "KILL_SWITCH_DEACTIVATED"
         assert daily_loss_state.kill_switch_active is False
-    
+
     def test_resume_logs_command_receipt(
         self, resume_command: TelegramCommand, active_state: RiskControlState, caplog
     ):
         """Test that /resume logs command receipt (AC3)."""
         with caplog.at_level(logging.INFO):
             handle_resume_command(resume_command, active_state)
-        
+
         assert "Telegram /resume command received" in caplog.text
         assert "123456" in caplog.text
-    
-    def test_resume_confirm_logs_state_change(
-        self, resume_confirm_command: TelegramCommand, active_state: RiskControlState, caplog
+
+    def test_resume_logs_state_change(
+        self, resume_command: TelegramCommand, active_state: RiskControlState, caplog
     ):
-        """Test that /resume confirm logs state change (AC3)."""
+        """Test that /resume logs state change (AC3)."""
         with caplog.at_level(logging.INFO):
-            handle_resume_command(resume_confirm_command, active_state)
-        
+            handle_resume_command(resume_command, active_state)
+
         assert "Kill-Switch deactivated" in caplog.text
 
 
@@ -976,6 +975,7 @@ class TestCreateKillResumeHandlers:
         
         assert "kill" in handlers
         assert "resume" in handlers
+        assert "balance" in handlers
         assert callable(handlers["kill"])
         assert callable(handlers["resume"])
     
@@ -1249,6 +1249,64 @@ class TestHandleStatusCommand:
         msg = result.message
         assert "已用保证金" not in msg
 
+
+class TestHandleBalanceCommand:
+    """Tests for handle_balance_command function (account snapshot)."""
+
+    @pytest.fixture
+    def base_command(self) -> TelegramCommand:
+        """Create a sample /balance command."""
+        return TelegramCommand(
+            command="balance",
+            args=[],
+            chat_id="123456",
+            message_id=100,
+            raw_text="/balance",
+        )
+
+    def test_balance_returns_account_snapshot(self, base_command: TelegramCommand):
+        """/balance should return balance, equity and positions information."""
+        from notifications.telegram_commands import handle_balance_command
+
+        result = handle_balance_command(
+            base_command,
+            balance=5000.0,
+            total_equity=6500.0,
+            total_margin=1000.0,
+            positions_count=2,
+            start_capital=6000.0,
+        )
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert result.state_changed is False
+        assert result.action == "ACCOUNT_BALANCE"
+
+        msg = result.message
+        assert "账户余额与持仓" in msg
+        assert "可用余额" in msg
+        assert "$5,000.00" in msg
+        assert "总权益" in msg
+        assert "$6,500.00" in msg
+        assert "持仓数量" in msg
+        assert "2" in msg
+
+    def test_balance_hides_margin_when_zero(self, base_command: TelegramCommand):
+        """/balance should hide margin line when margin is 0."""
+        from notifications.telegram_commands import handle_balance_command
+
+        result = handle_balance_command(
+            base_command,
+            balance=5000.0,
+            total_equity=5000.0,
+            total_margin=0.0,
+            positions_count=0,
+            start_capital=5000.0,
+        )
+
+        msg = result.message
+        assert "已用保证金" not in msg
+
     def test_status_shows_kill_switch_paused(self, base_command: TelegramCommand):
         """AC3: /status shows trading paused when kill switch is active."""
         result = handle_status_command(
@@ -1446,6 +1504,60 @@ class TestStatusHandlerIntegration:
         assert "📊 *Bot 状态*" in sent["text"]
         # 记录了审计事件
         assert ("BOT_STATUS", "status via Telegram | chat_id=123456") in events
+
+    def test_balance_handler_sends_message_and_records_event(self, caplog):
+        """/balance handler sends account snapshot and records audit event."""
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-2.0,
+            daily_loss_triggered=False,
+        )
+
+        sent: Dict[str, Any] = {}
+        events = []
+
+        def fake_send(text: str, parse_mode: str) -> None:
+            sent["text"] = text
+            sent["parse_mode"] = parse_mode
+
+        def fake_record(action: str, detail: str) -> None:
+            events.append((action, detail))
+
+        handlers = create_kill_resume_handlers(
+            state,
+            positions_count_fn=lambda: 2,
+            send_fn=fake_send,
+            record_event_fn=fake_record,
+            bot_token="dummy",
+            chat_id="123456",
+            total_equity_fn=lambda: 9500.0,
+            balance_fn=lambda: 5000.0,
+            total_margin_fn=lambda: 500.0,
+            start_capital=10000.0,
+            sortino_ratio_fn=lambda: 1.2,
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        cmd = TelegramCommand(
+            command="balance",
+            args=[],
+            chat_id="123456",
+            message_id=201,
+            raw_text="/balance",
+        )
+
+        with caplog.at_level(logging.INFO):
+            handlers["balance"](cmd)
+
+        # 发送了 MarkdownV2 文本
+        assert sent["parse_mode"] == "MarkdownV2"
+        assert "账户余额与持仓" in sent["text"]
+        # 记录了审计事件
+        assert ("ACCOUNT_BALANCE", "balance via Telegram | chat_id=123456") in events
 
     def test_risk_handler_sends_message_and_records_event(self, caplog):
         """AC3/AC4: /risk 通过工厂集成，发送消息并记录审计事件。"""
@@ -1682,7 +1794,7 @@ class TestHandleResetDailyCommand:
         reset_daily_command: TelegramCommand,
         daily_loss_triggered_state: RiskControlState,
     ):
-        """AC2/AC3: Kill-Switch 激活时，消息提示用户需要 /resume confirm。"""
+        """AC2/AC3: Kill-Switch 激活时，消息提示用户需要 /resume。"""
         result = handle_reset_daily_command(
             reset_daily_command,
             daily_loss_triggered_state,
@@ -1692,7 +1804,7 @@ class TestHandleResetDailyCommand:
 
         msg = result.message
         assert "Kill\\-Switch 仍处于激活状态" in msg
-        assert "/resume confirm" in msg
+        assert "/resume" in msg
 
     def test_reset_daily_message_no_prompt_when_kill_switch_inactive(
         self,
@@ -2064,8 +2176,9 @@ class TestHandleHelpCommand:
         assert result.action == "HELP_DISPLAYED"
         # 验证包含所有命令
         assert "/kill" in result.message
-        assert "/resume confirm" in result.message
+        assert "/resume" in result.message
         assert "/status" in result.message
+        assert "/balance" in result.message
         assert "/reset" in result.message  # /reset\_daily
         assert "/help" in result.message
 

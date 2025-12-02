@@ -52,7 +52,7 @@
 
 3. **恢复机制可靠性**
    - Telegram 命令可以成功解除 Kill-Switch
-   - 恢复操作需要确认，防止误操作
+   - 恢复操作为单步命令 `/resume`，并受每日亏损限制等风控策略保护，防止误操作
    - 所有状态变更有完整日志记录
 
 ### 非功能验收标准
@@ -73,7 +73,7 @@
 |--------|------|
 | 环境变量控制 | `KILL_SWITCH=true` 立即暂停新开仓 |
 | Telegram 命令触发 | `/kill` 命令触发 Kill-Switch |
-| Telegram 命令恢复 | `/resume` 命令解除 Kill-Switch（需确认） |
+| Telegram 命令恢复 | `/resume` 命令在 Kill-Switch 激活且未被每日亏损限制阻挡时直接解除 Kill-Switch（兼容旧的 `/resume confirm` 作为别名输入） |
 | 状态持久化 | Kill-Switch 状态保存到 `portfolio_state.json` |
 | 状态通知 | 触发/解除时发送 Telegram 通知 |
 | 行为定义 | 仅暂停新开仓，保留现有持仓，SL/TP 检查继续 |
@@ -120,7 +120,7 @@
 - **FR7**: Kill-Switch 激活后，系统拒绝所有 `signal=entry` 的 LLM 决策
 - **FR8**: Kill-Switch 激活后，系统继续执行 `signal=close` 和 SL/TP 检查
 - **FR9**: 用户可以通过 Telegram 发送 `/resume` 命令解除 Kill-Switch
-- **FR10**: `/resume` 命令需要用户发送 `/resume confirm` 进行二次确认
+- **FR10**: `/resume` 命令在 Kill-Switch 激活且未被每日亏损限制阻挡时直接解除 Kill-Switch，系统仍兼容旧版 `/resume confirm` 形式作为等价输入
 - **FR11**: Kill-Switch 状态变更时，系统发送 Telegram 通知
 
 ### 每日亏损限制功能
@@ -162,7 +162,7 @@
 ### 安全性
 
 - **NFR5**: Telegram 命令仅接受来自配置的 Chat ID
-- **NFR6**: 敏感操作（如 `/resume`）需要二次确认
+- **NFR6**: 敏感操作（如 `/resume`）应受风险控制策略约束（例如每日亏损限制阻挡恢复），防止误操作
 
 ### 可观测性
 
@@ -207,10 +207,25 @@ class RiskControlState:
 | 命令 | 描述 | 示例 |
 |------|------|------|
 | `/kill` | 触发 Kill-Switch | `/kill` |
-| `/resume` | 解除 Kill-Switch（需确认） | `/resume confirm` |
+| `/resume` | 解除 Kill-Switch（单步命令，兼容旧的 `/resume confirm` 形式） | `/resume` |
 | `/status` | 查看风控状态 | `/status` |
 | `/reset_daily` | 重置每日亏损基准 | `/reset_daily` |
 | `/help` | 显示帮助信息 | `/help` |
+
+#### `/balance` 实盘账户视角（已实现）
+
+- **目标**：当 `TRADING_BACKEND` 为 `binance_futures` 或 `backpack_futures` 且开启实盘时，`/balance` 展示 *真实交易所账户快照*，而不是仅依赖 `portfolio_state.json` 中的本地组合视图。
+- **Binance Futures 方案**：
+  - 复用现有 `get_binance_client()`，在 Bot 层调用 `Client.futures_account()` 获取账户信息（如 `totalWalletBalance`、`totalMarginBalance`、`positions` 等）。
+  - 在 Bot 层整理为统一的 snapshot 结构，例如：`balance`（钱包余额 / 可用资金）、`total_equity`（总权益）、`total_margin`（已用保证金汇总）、`positions_count`（持仓合约数量）。
+  - 通过 Telegram 命令 handler 工厂（如 `create_kill_resume_handlers`）注入 `account_snapshot_fn` 到 `/balance` handler，使 handler 本身保持“只关心 snapshot 字段”的视图，不直接依赖具体交易所 SDK。
+- **Backpack Futures 方案**：
+  - 在 `BackpackFuturesExchangeClient` 中新增 `get_account_snapshot()` 方法，调用 Backpack 官方 API：
+    - `collateralQuery` (`GET /api/v1/capital/collateral`)：获取 `netEquity`、`netEquityAvailable`、`netEquityLocked`、`pnlUnrealized`
+    - `positionQuery` (`GET /api/v1/futures/position`)：获取持仓列表并统计有效持仓数量
+  - 返回的数据结构与 Binance 的 snapshot 对齐：`balance`、`total_equity`、`total_margin`、`positions_count`，方便 Telegram 层复用同一渲染逻辑。
+- **回退策略**：
+  - 当未启用上述实盘 backend，或交易所账户接口暂不可用 / 返回错误时，`/balance` 回退使用当前基于 `portfolio_state.json` 的组合视图，不影响现有回测和 Paper Trading 行为。
 
 ### 集成点
 
@@ -256,8 +271,7 @@ notifications/
 | Kill-Switch 激活时 LLM 返回 entry 信号 | 信号被忽略，记录日志 |
 | Kill-Switch 激活时 LLM 返回 close 信号 | 信号正常执行 |
 | Kill-Switch 激活时触发 SL/TP | SL/TP 正常执行 |
-| 发送 `/resume` 命令 | 收到确认提示 |
-| 发送 `/resume confirm` 命令 | Kill-Switch 解除，收到确认通知 |
+| 发送 `/resume` 命令 | Kill-Switch 解除，收到确认通知（若未被每日亏损限制阻挡；旧版 `/resume confirm` 仍作为等价输入被接受） |
 
 ### 每日亏损限制测试
 

@@ -291,7 +291,7 @@ def notify_kill_switch_activated(reason: str, positions_count: int) -> None:
 ⚠️ 所有新开仓已暂停
 ✅ 现有持仓 SL/TP 继续生效
 
-恢复交易: 发送 `/resume confirm`"""
+恢复交易: 发送 `/resume`"""
     send_telegram_message(message)
 ```
 
@@ -434,7 +434,7 @@ def notify_daily_loss_limit_triggered(loss_pct: float, limit_pct: float) -> None
 *选项:*
 • 等待次日 UTC 00:00 自动重置
 • 发送 `/reset_daily` 手动重置基准
-• 发送 `/resume confirm` 强制恢复（谨慎）"""
+• 发送 `/resume` 强制恢复（谨慎）"""
     send_telegram_message(message)
 ```
 
@@ -500,8 +500,7 @@ class TelegramCommandHandler:
 
 **Acceptance Criteria**:
 - [ ] `/kill` 命令激活 Kill-Switch
-- [ ] `/resume` 命令提示需要确认
-- [ ] `/resume confirm` 命令解除 Kill-Switch
+- [ ] `/resume` 命令在 Kill-Switch 激活且未被每日亏损限制阻挡时直接解除 Kill-Switch
 - [ ] 命令执行后发送确认消息
 - [ ] 添加单元测试
 
@@ -518,8 +517,6 @@ def handle_command(command: str, args: List[str]) -> str:
                 return "✅ Kill-Switch 已解除，交易恢复"
             else:
                 return "⚠️ 无法解除：每日亏损限制仍在生效"
-        else:
-            return "⚠️ 请发送 `/resume confirm` 确认解除 Kill-Switch"
 ```
 
 ---
@@ -610,7 +607,7 @@ def handle_reset_daily_command() -> str:
 HELP_MESSAGE = """📋 *可用命令*
 
 */kill* - 激活 Kill-Switch，暂停所有新开仓
-*/resume confirm* - 解除 Kill-Switch，恢复交易
+*/resume* - 解除 Kill-Switch，恢复交易
 */status* - 查看当前风控状态
 */reset_daily* - 重置每日亏损基准
 */help* - 显示此帮助信息"""

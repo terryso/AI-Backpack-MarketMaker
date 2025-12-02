@@ -49,6 +49,7 @@ from config.settings import (
     RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT,
     RISK_FREE_RATE,
     get_effective_tradebot_loop_enabled,
+    BACKPACK_API_PUBLIC_KEY, BACKPACK_API_SECRET_SEED, BACKPACK_API_WINDOW_MS,
 )
 
 
@@ -113,6 +114,7 @@ from exchange.factory import (
     get_binance_client, get_binance_futures_exchange, get_hyperliquid_trader,
 )
 from exchange.market_data import BinanceMarketDataClient, BackpackMarketDataClient
+from exchange.backpack import BackpackFuturesExchangeClient
 
 hyperliquid_trader = get_hyperliquid_trader()
 _market_data_client = None
@@ -240,6 +242,147 @@ def get_market_data_client():
     return _market_data_client
 
 
+# ───────────────────────── LIVE ACCOUNT SNAPSHOT ─────────────────────────
+# Cached Backpack client for account queries (separate from trading client)
+_backpack_account_client: Optional[BackpackFuturesExchangeClient] = None
+
+
+def _get_backpack_account_client() -> Optional[BackpackFuturesExchangeClient]:
+    """Get or initialize Backpack client for account queries."""
+    global _backpack_account_client
+    if _backpack_account_client is not None:
+        return _backpack_account_client
+
+    if not BACKPACK_API_PUBLIC_KEY or not BACKPACK_API_SECRET_SEED:
+        logging.debug("Backpack account client not available: missing API credentials")
+        return None
+
+    try:
+        _backpack_account_client = BackpackFuturesExchangeClient(
+            api_public_key=BACKPACK_API_PUBLIC_KEY,
+            api_secret_seed=BACKPACK_API_SECRET_SEED,
+            base_url=BACKPACK_API_BASE_URL,
+            window_ms=BACKPACK_API_WINDOW_MS,
+        )
+        logging.info("Backpack account client initialized for /balance queries")
+    except Exception as exc:
+        logging.warning("Failed to initialize Backpack account client: %s", exc)
+        _backpack_account_client = None
+
+    return _backpack_account_client
+
+
+def get_live_account_snapshot() -> Optional[Dict[str, Any]]:
+    """Get live account snapshot from the configured exchange.
+
+    This function checks the current TRADING_BACKEND and fetches real-time
+    account data from the appropriate exchange API.
+
+    Returns:
+        Dictionary with unified account snapshot:
+        - balance: Available balance
+        - total_equity: Total account equity
+        - total_margin: Margin in use
+        - positions_count: Number of open positions
+        Returns None if:
+        - No live backend is configured
+        - API credentials are missing
+        - API call fails
+    """
+    # Binance Futures
+    if TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE:
+        return _get_binance_futures_snapshot()
+
+    # Backpack Futures
+    if TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE:
+        return _get_backpack_futures_snapshot()
+
+    # No live backend configured, return None to use local portfolio view
+    return None
+
+
+def _get_binance_futures_snapshot() -> Optional[Dict[str, Any]]:
+    """Get account snapshot from Binance Futures API.
+
+    Uses the python-binance Client.futures_account() method to fetch:
+    - totalWalletBalance: Wallet balance (available funds)
+    - totalMarginBalance: Total margin balance (equity)
+    - positions: List of positions for margin calculation
+    """
+    client = get_binance_client()
+    if client is None:
+        logging.warning("Binance client not available for account snapshot")
+        return None
+
+    try:
+        account = client.futures_account()
+    except Exception as exc:
+        logging.warning("Failed to fetch Binance futures account: %s", exc)
+        return None
+
+    if not isinstance(account, dict):
+        logging.warning("Binance futures_account returned unexpected type: %r", type(account))
+        return None
+
+    try:
+        # totalWalletBalance: wallet balance (deposited funds)
+        # totalMarginBalance: total margin balance including unrealized PnL
+        # availableBalance: available for new positions
+        wallet_balance = float(account.get("totalWalletBalance", 0) or 0)
+        margin_balance = float(account.get("totalMarginBalance", 0) or 0)
+        available_balance = float(account.get("availableBalance", 0) or 0)
+
+        # Calculate margin in use and count positions
+        total_margin = 0.0
+        positions_count = 0
+        positions_list = account.get("positions", [])
+        if isinstance(positions_list, list):
+            for pos in positions_list:
+                if not isinstance(pos, dict):
+                    continue
+                try:
+                    pos_amt = float(pos.get("positionAmt", 0) or 0)
+                except (TypeError, ValueError):
+                    pos_amt = 0.0
+                if pos_amt != 0:
+                    positions_count += 1
+                    # Use initialMargin or isolatedMargin for margin calculation
+                    try:
+                        initial_margin = float(pos.get("initialMargin", 0) or 0)
+                        isolated_margin = float(pos.get("isolatedMargin", 0) or 0)
+                        total_margin += max(initial_margin, isolated_margin)
+                    except (TypeError, ValueError):
+                        pass
+
+        return {
+            "balance": available_balance,
+            "total_equity": margin_balance,
+            "total_margin": total_margin,
+            "positions_count": positions_count,
+        }
+    except (TypeError, ValueError) as exc:
+        logging.warning("Failed to parse Binance account data: %s", exc)
+        return None
+
+
+def _get_backpack_futures_snapshot() -> Optional[Dict[str, Any]]:
+    """Get account snapshot from Backpack Futures API.
+
+    Uses BackpackFuturesExchangeClient.get_account_snapshot() which calls:
+    - collateralQuery: For netEquity, netEquityAvailable, netEquityLocked
+    - positionQuery: For positions count
+    """
+    client = _get_backpack_account_client()
+    if client is None:
+        return None
+
+    try:
+        return client.get_account_snapshot()
+    except Exception as exc:
+        logging.warning("Failed to get Backpack account snapshot: %s", exc)
+        return None
+
+
 def get_telegram_command_handler() -> Optional[TelegramCommandHandler]:
     """Get or initialize Telegram command handler.
     
@@ -304,6 +447,7 @@ def poll_telegram_commands() -> None:
                 risk_control_enabled=RISK_CONTROL_ENABLED,
                 daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                 daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
+                account_snapshot_fn=get_live_account_snapshot,
             )
             # Process commands with handlers
             process_telegram_commands(commands, command_handlers=command_handlers)
@@ -375,6 +519,7 @@ def _telegram_command_loop() -> None:
                     risk_control_enabled=RISK_CONTROL_ENABLED,
                     daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                     daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
+                    account_snapshot_fn=get_live_account_snapshot,
                 )
                 # Process commands with handlers
                 process_telegram_commands(commands, command_handlers=command_handlers)

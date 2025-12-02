@@ -130,16 +130,8 @@ When `TELEGRAM_ADMIN_USER_ID` is configured in `.env` (set to your Telegram user
 - `/config get KEY` – shows details for a specific key, including the current value and valid range or enum.
 - `/config set KEY VALUE` – sets an in-memory runtime override; only the admin user is allowed to use this and every successful change is audit-logged.
 
-The 4 supported keys (matching the whitelist in `config/runtime_overrides.py`) are:
+In the current implementation, **three keys are directly adjustable via `/config`**:
 
-- `TRADING_BACKEND`
-  - Meaning: intended trading execution backend.
-  - Allowed values: `paper`, `hyperliquid`, `binance_futures`, `backpack_futures`.
-  - Notes: the execution engine is initialised on startup based on this value; **changing it at runtime does not hot-swap the backend in the current process**. It is mainly useful to inspect/prepare config for the next restart.
-- `MARKET_DATA_BACKEND`
-  - Meaning: market data source.
-  - Allowed values: `binance`, `backpack`.
-  - Notes: the market data client is initialised and cached on startup; changing this key at runtime mostly affects `get_effective_*` output, while the actual backend should be switched by restarting the bot.
 - `TRADEBOT_INTERVAL`
   - Meaning: primary trading loop interval (e.g. `15m`, `1h`).
   - Allowed values: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`.
@@ -155,6 +147,18 @@ The 4 supported keys (matching the whitelist in `config/runtime_overrides.py`) a
   - Effect:
     - After `/config set TRADEBOT_LLM_TEMPERATURE 1.2`, the **very next LLM call** uses the new temperature.
     - The value is included in the request payload and recorded in `data/ai_messages.csv` as `metadata.temperature` for later analysis.
+- `TRADEBOT_LOOP_ENABLED`
+  - Meaning: global on/off switch for the main trading loop (`false` = pause loop but keep the process and Telegram side running; `true` = resume normal iterations).
+  - Allowed values: boolean-like values such as `true` / `false`, `1` / `0`, `on` / `off`.
+  - Effect:
+    - When set to `false`, the bot skips trading logic and only sleeps for `get_effective_check_interval()` seconds between checks.
+    - When set to `true`, the bot resumes full trading iterations.
+
+The runtime overrides layer itself still supports overrides for backend-related keys such as `TRADING_BACKEND` and `MARKET_DATA_BACKEND`, but in the current bot wiring:
+
+- These backend keys are **configured via `.env` and process startup**, not via `/config`.
+- `/config` will treat `TRADING_BACKEND` / `MARKET_DATA_BACKEND` as invalid keys and return an error listing the supported runtime-configurable keys.
+- You should continue to manage trading and market-data backends through `.env` + restart rather than attempting to hot-swap them at runtime.
 
 Permissions & safety notes:
 

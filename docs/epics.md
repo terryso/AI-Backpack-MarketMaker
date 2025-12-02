@@ -27,7 +27,7 @@
   系统应提供一层与具体交易所无关的实盘执行抽象，使 Bot 在开仓、平仓、附带 SL/TP、错误反馈等行为上，对 Binance、Hyperliquid 以及未来新增交易所保持一致的用户体验。
 
 - **FR-OPS1：运行时运营配置管理（Telegram 调参）**  
-  系统应支持通过安全的 Telegram 命令在 Bot 运行时调整一组白名单内的关键配置项（交易后端、行情后端、交易 interval、LLM temperature），无需修改文件或重启进程，并具备权限校验与日志审计能力。
+  系统应支持通过安全的 Telegram 命令在 Bot 运行时调整一组白名单内的关键配置项（如交易 interval、LLM temperature、主循环开关等），无需修改文件或重启进程，并具备权限校验与日志审计能力；backend 相关配置仍通过 `.env` 与重启管理。
 
 - **FR-OPS2：可配置交易对 Universe & Telegram 管理**  
   系统应支持将可交易的合约/币对清单从代码中解耦出来，通过配置与 Telegram 命令进行管理，只影响 Paper / Live 模式的交易 Universe；新增交易对时需通过当前 `MARKET_DATA_BACKEND` 所在交易所/数据源校验其合法性，删除交易对仅阻止后续新开仓而不会强制平掉已有持仓。
@@ -343,11 +343,11 @@ So that switching or adding exchanges is predictable and low-risk.
   - `/config list`：列出当前支持远程修改的配置项（key）及其当前生效值。
   - `/config get <KEY>`：展示指定 key 的当前值与合法取值范围/枚举说明。
   - `/config set <KEY> <VALUE>`：仅限管理员账号，修改指定 key 的运行时配置值。
-- 支持的配置项白名单：
-  - `TRADING_BACKEND`
-  - `MARKET_DATA_BACKEND`
+- runtime overrides 层的白名单包含 backend 与调参相关的多个 key，但**当前通过 Telegram `/config` 暴露并支持修改的仅为**：
   - `TRADEBOT_INTERVAL`
   - `TRADEBOT_LLM_TEMPERATURE`
+  - `TRADEBOT_LOOP_ENABLED`
+- backend 相关 key（如 `TRADING_BACKEND`、`MARKET_DATA_BACKEND`）仍通过 `.env` 与进程重启来生效，避免在运行中热切换造成状态不一致。
 - 在配置层增加一层「运行时覆盖」机制（runtime overrides），读取配置时优先使用 overrides，其次回退到 `.env` / 默认值，保证后续扩展更多可远程调参项的能力。
 
 **非范围（Out of Scope）**
@@ -359,11 +359,10 @@ So that switching or adding exchanges is predictable and low-risk.
 **验收标准（Done Criteria）**
 
 1. 在运行中的 Bot 中，通过 Telegram：
-   - `/config list` 能返回 4 个白名单 key 及其当前生效值；
-   - `/config get <KEY>` 对合法/非法 key 的反馈与文档一致（非法 key 会列出支持的 key 列表）。
+   - `/config list` 能返回当前支持远程修改的运行时配置项（`TRADEBOT_INTERVAL`、`TRADEBOT_LLM_TEMPERATURE`、`TRADEBOT_LOOP_ENABLED`）及其当前生效值；
+   - `/config get <KEY>` 对合法/非法 key 的反馈与文档一致（非法 key 会列出受支持的 key 列表）。
 2. 仅管理员 Telegram user_id 可以成功调用 `/config set <KEY> <VALUE>`，非管理员调用时收到明确的「无权限修改，只能查看」提示。
 3. 对每个白名单配置项，输入非法取值时，均会返回包含合法取值范围/枚举的错误提示：
-   - `TRADING_BACKEND` / `MARKET_DATA_BACKEND`：仅接受代码中声明的 backend 枚举值；
    - `TRADEBOT_INTERVAL`：仅接受 `3m`、`5m`、`15m`、`30m`、`1h`、`4h`；
    - `TRADEBOT_LLM_TEMPERATURE`：仅接受 `[0.0, 1.0]` 区间内的小数，解析为 float。
 4. 在不重启进程的前提下，修改上述配置后：
@@ -524,7 +523,7 @@ So that I can inspect and adjust key runtime parameters via Telegram.
 **Acceptance Criteria:**
 
 - 在 Telegram Bot 中实现 `/config list`：
-  - 返回当前支持远程修改的 4 个配置项及其当前生效值。
+  - 返回当前支持远程修改的运行时配置项（`TRADEBOT_INTERVAL`、`TRADEBOT_LLM_TEMPERATURE`、`TRADEBOT_LOOP_ENABLED`）及其当前生效值。
 - 在 Telegram Bot 中实现 `/config get <KEY>`：
   - 对合法 key 返回当前值和合法取值范围/枚举说明；
   - 对非法 key 返回错误信息，并列出受支持的 key 列表。

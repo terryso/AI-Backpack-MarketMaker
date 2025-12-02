@@ -214,7 +214,7 @@ def build_kill_switch_activated_message(
         f"*触发时间:* `{triggered_at}`\n"
         f"*当前持仓:* {positions_count} 个\n\n"
         f"⚠️ 新开仓信号已被阻止，现有持仓的止损/止盈仍正常执行。\n\n"
-        f"💡 恢复交易请使用: `/resume confirm`"
+        f"💡 恢复交易请使用: `/resume`"
     )
     return message
 
@@ -261,7 +261,7 @@ def _format_kill_switch_deactivation_reason(reason: str) -> str:
     reason_map = {
         "env:KILL_SWITCH": "环境变量 KILL_SWITCH=false",
         "runtime:resume": "运行时恢复",
-        "telegram:/resume": "Telegram 命令 /resume confirm",
+        "telegram:/resume": "Telegram 命令 /resume",
         "daily_reset": "每日亏损限制手动重置",
     }
     return reason_map.get(reason, reason)
@@ -431,7 +431,7 @@ def build_daily_loss_limit_triggered_message(
         f"*当前权益:* `${current_equity:,.2f}`\n"
         f"*亏损金额:* `${loss_amount:,.2f}`\n\n"
         f"🚨 Kill\\-Switch 已自动激活，新开仓信号已被阻止。\n\n"
-        f"💡 恢复交易请使用: `/resume confirm`\n"
+        f"💡 恢复交易请使用: `/resume`\n"
         f"📊 查看状态请使用: `/status`"
     )
     return message

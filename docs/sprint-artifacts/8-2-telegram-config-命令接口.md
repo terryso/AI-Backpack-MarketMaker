@@ -11,15 +11,14 @@ so that I can inspect and adjust key runtime parameters via Telegram.
 ## Acceptance Criteria
 
 1. 在 Telegram Bot 中实现 `/config list`：
-   - 返回当前支持远程修改的 4 个配置项及其当前生效值：
-     - `TRADING_BACKEND`
-     - `MARKET_DATA_BACKEND`
+   - 返回当前支持远程修改的运行时配置项及其当前生效值：
      - `TRADEBOT_INTERVAL`
-     - `TRADEBOT_LLM_TEMPERATURE`。
+     - `TRADEBOT_LLM_TEMPERATURE`
+     - `TRADEBOT_LOOP_ENABLED`。
 
 2. 在 Telegram Bot 中实现 `/config get <KEY>`：
    - 对合法 key 返回当前值和合法取值范围/枚举说明；
-   - 对非法 key 返回错误信息，并列出受支持的 key 列表。
+   - 对非法 key 返回错误信息，并列出受支持的 key 列表（即上述 3 个）。
 
 3. 在 Telegram Bot 中实现 `/config set <KEY> <VALUE>`：
    - 收到合法 key + 合法 value 时，调用 runtime overrides 层更新对应配置项；
@@ -63,7 +62,7 @@ so that I can inspect and adjust key runtime parameters via Telegram.
 - 需求主要来源：
   - `docs/epics.md` 中 **Story 8.2: Telegram `/config` 命令接口**：
     - 要求在 Telegram Bot 中提供 `/config list|get|set` 三个子命令；
-    - 通过 runtime overrides 层修改 4 个白名单配置项的运行时值；
+    - 通过 runtime overrides 层修改一组受控白名单配置项的运行时值（当前版本暴露为 `TRADEBOT_INTERVAL`、`TRADEBOT_LLM_TEMPERATURE`、`TRADEBOT_LOOP_ENABLED`，backend 相关 key 继续由 `.env` + 重启控制）；
     - 对非法 key/value 返回清晰的错误与合法取值范围说明。[Source: docs/epics.md#Story-8.2-Telegram-config-命令接口]
   - `docs/epics.md` 中 **Epic 8 概述**：
     - 强调 `/config` 仅影响当前进程的运行时配置，不写回 `.env`；

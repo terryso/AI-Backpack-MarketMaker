@@ -382,9 +382,10 @@ def process_telegram_commands(
 # This allows easy extension when new commands are added
 COMMAND_REGISTRY: list[tuple[str, str]] = [
     ("/status", "查看 Bot 资金与盈利状态"),
+    ("/balance", "查看当前账户余额与持仓概要"),
     ("/risk", "查看风控配置与状态"),
     ("/kill", "激活 Kill\\-Switch，暂停所有新开仓"),
-    ("/resume confirm", "解除 Kill\\-Switch（需二次确认）"),
+    ("/resume", "解除 Kill\\-Switch 并恢复新开仓"),
     ("/reset\\_daily", "手动重置每日亏损基准"),
     ("/config list", "列出可配置项及当前值"),
     ("/config get KEY", "查看指定配置项详情"),
@@ -568,7 +569,7 @@ def handle_kill_command(
         f"*触发时间:* `{state.kill_switch_triggered_at}`\n"
         f"*当前持仓:* {positions_count} 个\n\n"
         "⚠️ 新开仓信号已被阻止，现有持仓的止损/止盈仍正常执行。\n\n"
-        "💡 恢复交易请使用: `/resume confirm`"
+        "💡 恢复交易请使用: `/resume`"
     )
     
     # Log state change (AC3)
@@ -598,9 +599,8 @@ def handle_resume_command(
 ) -> CommandResult:
     """Handle the /resume command to deactivate Kill-Switch.
     
-    This function implements the two-step confirmation mechanism:
-    - /resume without 'confirm' returns a prompt asking for confirmation
-    - /resume confirm actually deactivates Kill-Switch (if allowed)
+    This function deactivates Kill-Switch via the risk control API, with
+    optional protection when daily loss limits are triggered.
     
     Args:
         cmd: The TelegramCommand object for /resume.
@@ -611,10 +611,6 @@ def handle_resume_command(
     
     Returns:
         CommandResult with success status and response message.
-    
-    References:
-        - AC2: /resume 与 /resume confirm 的二次确认机制
-        - AC3: 日志与审计
     """
     from core.risk_control import deactivate_kill_switch
     
@@ -642,32 +638,6 @@ def handle_resume_command(
             action=None,
         )
     
-    # Check for 'confirm' argument
-    has_confirm = len(cmd.args) > 0 and cmd.args[0].lower() == "confirm"
-    
-    if not has_confirm:
-        # Return prompt for confirmation (AC2)
-        message = (
-            "⚠️ *确认解除 Kill\\-Switch*\n\n"
-            f"*当前状态:* Kill\\-Switch 激活中\n"
-            f"*激活原因:* {_escape_markdown(state.kill_switch_reason or 'unknown')}\n"
-            f"*激活时间:* `{state.kill_switch_triggered_at}`\n\n"
-            "🔐 解除 Kill\\-Switch 将恢复新开仓信号处理。\n\n"
-            "请发送 `/resume confirm` 确认解除。"
-        )
-        logging.info(
-            "Telegram /resume: confirmation required, state unchanged | "
-            "chat_id=%s | current_reason=%s",
-            cmd.chat_id,
-            state.kill_switch_reason,
-        )
-        return CommandResult(
-            success=True,
-            message=message,
-            state_changed=False,
-            action="RESUME_PENDING_CONFIRM",
-        )
-    
     # Check if daily loss triggered and force is not set
     if state.daily_loss_triggered and not force:
         message = (
@@ -677,7 +647,7 @@ def handle_resume_command(
             "💡 如需强制恢复，请使用 `/reset_daily` 重置每日亏损限制后再试。"
         )
         logging.warning(
-            "Telegram /resume confirm: blocked by daily_loss_triggered | "
+            "Telegram /resume: blocked by daily_loss_triggered | "
             "chat_id=%s | daily_loss_pct=%.2f%%",
             cmd.chat_id,
             state.daily_loss_pct,
@@ -709,13 +679,13 @@ def handle_resume_command(
     message = (
         "✅ *Kill\\-Switch 已解除*\n\n"
         f"*解除时间:* `{deactivated_at}`\n"
-        f"*解除原因:* Telegram 命令 /resume confirm\n\n"
+        f"*解除原因:* Telegram 命令 /resume\n\n"
         "📈 交易功能已恢复正常，新开仓信号将被正常处理。"
     )
     
     # Log state change (AC3)
     logging.info(
-        "Telegram /resume confirm: Kill-Switch deactivated | chat_id=%s | "
+        "Telegram /resume: Kill-Switch deactivated | chat_id=%s | "
         "reason=%s | deactivated_at=%s",
         cmd.chat_id,
         reason,
@@ -839,6 +809,74 @@ def handle_status_command(
         message=message,
         state_changed=False,
         action="BOT_STATUS",
+    )
+
+
+def handle_balance_command(
+    cmd: TelegramCommand,
+    *,
+    balance: float,
+    total_equity: Optional[float],
+    total_margin: float,
+    positions_count: int,
+    start_capital: float,
+) -> CommandResult:
+    """Handle the /balance command to show account balance and positions.
+
+    This command focuses on the current account snapshot: balance, equity,
+    margin usage and open positions count.
+
+    Notes:
+        当 `TRADING_BACKEND` 为 `binance_futures` 或 `backpack_futures` 且启用实盘时，
+        调用方会通过 `account_snapshot_fn` 注入实盘账户快照：
+        - Binance Futures: 使用 `Client.futures_account()` 获取账户信息
+        - Backpack Futures: 使用 `collateralQuery` 和 `positionQuery` API
+
+        当实盘快照不可用（未配置实盘、API 调用失败等）时，回退到本地组合视图
+        （基于 `portfolio_state.json` 的 Paper Trading 状态）。
+    """
+    logging.info(
+        "Telegram /balance command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    if total_equity is None or total_equity != total_equity:
+        equity_display = "N/A"
+        return_pct_display = "N/A"
+    else:
+        equity_display = f"${total_equity:,.2f}"
+        if start_capital > 0:
+            return_pct = ((total_equity - start_capital) / start_capital) * 100
+            return_pct_display = f"{return_pct:+.2f}%"
+        else:
+            return_pct_display = "N/A"
+
+    message = (
+        "💰 *账户余额与持仓*\n\n"
+        f"*可用余额:* `${balance:,.2f}`\n"
+        f"*总权益:* `{equity_display} ({return_pct_display})`\n"
+    )
+
+    if total_margin > 0:
+        message += f"*已用保证金:* `${total_margin:,.2f}`\n"
+
+    message += f"*持仓数量:* {positions_count}"
+
+    logging.info(
+        "Telegram /balance snapshot | chat_id=%s | balance=%.2f | equity=%s | "
+        "positions=%d",
+        cmd.chat_id,
+        balance,
+        equity_display,
+        positions_count,
+    )
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="ACCOUNT_BALANCE",
     )
 
 
@@ -968,7 +1006,7 @@ def handle_reset_daily_command(
     users to start a new risk window after reviewing a large drawdown day.
 
     IMPORTANT: This command does NOT automatically deactivate Kill-Switch.
-    Users must explicitly call /resume confirm after /reset_daily to resume
+    Users must explicitly call /resume after /reset_daily to resume
     trading. This design prevents accidental resumption after large losses.
 
     Args:
@@ -1069,7 +1107,7 @@ def handle_reset_daily_command(
     if kill_switch_active:
         next_step = (
             "\n\n⚠️ *Kill\\-Switch 仍处于激活状态*\n"
-            "如需恢复交易，请发送 `/resume confirm`"
+            "如需恢复交易，请发送 `/resume`"
         )
     else:
         next_step = "\n\n✅ 交易功能正常运行中。"
@@ -1796,6 +1834,7 @@ def create_kill_resume_handlers(
     risk_control_enabled: bool = True,
     daily_loss_limit_enabled: bool = True,
     daily_loss_limit_pct: float = 5.0,
+    account_snapshot_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
 ) -> Dict[str, Callable[[TelegramCommand], None]]:
     """Create command handlers for Telegram commands.
     
@@ -1819,6 +1858,13 @@ def create_kill_resume_handlers(
         risk_control_enabled: Whether risk control is enabled.
         daily_loss_limit_enabled: Whether daily loss limit is enabled.
         daily_loss_limit_pct: Daily loss limit percentage threshold.
+        account_snapshot_fn: Optional function to get live exchange account snapshot.
+            When provided and returns a valid dict, /balance will use this data
+            instead of the local portfolio view. Expected keys:
+            - balance: Available balance
+            - total_equity: Total account equity
+            - total_margin: Margin in use
+            - positions_count: Number of open positions
     
     Returns:
         Dict mapping command names to handler functions.
@@ -1886,13 +1932,11 @@ def create_kill_resume_handlers(
         # Record audit event if state changed or action taken
         if result.action:
             detail = f"Telegram /resume | chat_id={cmd.chat_id}"
-            if result.action == "RESUME_PENDING_CONFIRM":
-                detail = f"Resume requested, confirmation pending | chat_id={cmd.chat_id}"
-            elif result.action == "RESUME_BLOCKED_DAILY_LOSS":
+            if result.action == "RESUME_BLOCKED_DAILY_LOSS":
                 detail = f"Resume blocked by daily loss limit | chat_id={cmd.chat_id}"
             elif result.action == "KILL_SWITCH_DEACTIVATED":
-                detail = f"Kill-Switch deactivated via Telegram /resume confirm | chat_id={cmd.chat_id}"
-            
+                detail = f"Kill-Switch deactivated via Telegram /resume | chat_id={cmd.chat_id}"
+
             _record_event(result.action, detail)
     
     def status_handler(cmd: TelegramCommand) -> None:
@@ -1923,6 +1967,71 @@ def create_kill_resume_handlers(
 
         if result.action:
             detail = f"status via Telegram | chat_id={cmd.chat_id}"
+            _record_event(result.action, detail)
+
+    def balance_handler(cmd: TelegramCommand) -> None:
+        """Handler for /balance command (account snapshot).
+        
+        Prioritizes live exchange account data when account_snapshot_fn is
+        provided and returns valid data. Falls back to local portfolio view
+        when live data is unavailable.
+        """
+        try:
+            # Try to get live account snapshot first
+            snapshot = None
+            if account_snapshot_fn is not None:
+                try:
+                    snapshot = account_snapshot_fn()
+                except Exception as snap_exc:
+                    logging.warning(
+                        "Failed to get live account snapshot: %s", snap_exc
+                    )
+                    snapshot = None
+
+            if snapshot is not None and isinstance(snapshot, dict):
+                # Use live exchange data
+                current_balance = float(snapshot.get("balance", 0.0))
+                total_equity = snapshot.get("total_equity")
+                if total_equity is not None:
+                    total_equity = float(total_equity)
+                current_margin = float(snapshot.get("total_margin", 0.0))
+                positions_count = int(snapshot.get("positions_count", 0))
+                logging.debug(
+                    "Using live account snapshot for /balance: "
+                    "balance=%.2f, equity=%s, margin=%.2f, positions=%d",
+                    current_balance,
+                    total_equity,
+                    current_margin,
+                    positions_count,
+                )
+            else:
+                # Fallback to local portfolio view
+                positions_count = positions_count_fn() if positions_count_fn else 0
+                total_equity = total_equity_fn() if total_equity_fn is not None else None
+                current_balance = balance_fn() if balance_fn is not None else 0.0
+                current_margin = total_margin_fn() if total_margin_fn is not None else 0.0
+                logging.debug(
+                    "Using local portfolio view for /balance (no live snapshot)"
+                )
+
+            result = handle_balance_command(
+                cmd,
+                balance=current_balance,
+                total_equity=total_equity,
+                total_margin=current_margin,
+                positions_count=positions_count,
+                start_capital=start_capital,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /balance command: %s", exc)
+            fallback = "⚠️ *暂时无法获取账户余额，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"balance via Telegram | chat_id={cmd.chat_id}"
             _record_event(result.action, detail)
 
     def risk_handler(cmd: TelegramCommand) -> None:
@@ -1957,6 +2066,7 @@ def create_kill_resume_handlers(
     }
 
     handlers["status"] = status_handler
+    handlers["balance"] = balance_handler
     handlers["risk"] = risk_handler
 
     def reset_daily_handler(cmd: TelegramCommand) -> None:

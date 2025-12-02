@@ -361,3 +361,163 @@ class BackpackFuturesExchangeClient:
             raw=raw,
             extra=extra,
         )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # ACCOUNT SNAPSHOT (for /balance command)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def get_account_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Retrieve live account snapshot from Backpack API.
+
+        This method calls the collateralQuery and positionQuery endpoints to
+        build a unified account snapshot for the /balance Telegram command.
+
+        Returns:
+            Dictionary with keys:
+            - balance: Available balance (netEquityAvailable from collateral)
+            - total_equity: Total account equity (netEquity from collateral)
+            - total_margin: Locked equity / margin in use (netEquityLocked)
+            - positions_count: Number of open futures positions
+            - unrealized_pnl: Unrealized PnL from collateral
+            Returns None if API call fails.
+        """
+        collateral = self._get_collateral()
+        if collateral is None:
+            return None
+
+        positions = self._get_open_positions()
+        positions_count = len(positions) if positions is not None else 0
+
+        try:
+            net_equity = float(collateral.get("netEquity", 0) or 0)
+            net_equity_available = float(collateral.get("netEquityAvailable", 0) or 0)
+            net_equity_locked = float(collateral.get("netEquityLocked", 0) or 0)
+            unrealized_pnl = float(collateral.get("pnlUnrealized", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            logging.warning("Failed to parse Backpack collateral values: %s", exc)
+            return None
+
+        return {
+            "balance": net_equity_available,
+            "total_equity": net_equity,
+            "total_margin": net_equity_locked,
+            "positions_count": positions_count,
+            "unrealized_pnl": unrealized_pnl,
+        }
+
+    def _get_collateral(self) -> Optional[Dict[str, Any]]:
+        """Fetch collateral information from Backpack API.
+
+        Instruction: collateralQuery
+        Endpoint: GET /api/v1/capital/collateral
+        """
+        instruction = "collateralQuery"
+        params: Dict[str, Any] = {}
+        headers = self._sign(instruction, params)
+        url = f"{self._base_url}/api/v1/capital/collateral"
+
+        try:
+            response = self._session.get(
+                url,
+                headers=headers,
+                timeout=self._timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Backpack collateral request failed: %s", exc)
+            return None
+
+        if response.status_code != 200:
+            logging.warning(
+                "Backpack collateral request HTTP %s: %s",
+                response.status_code,
+                response.text[:200] if response.text else "(empty)",
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logging.warning("Backpack collateral response is not valid JSON")
+            return None
+
+        if not isinstance(data, dict):
+            logging.warning("Backpack collateral response is not a dict: %r", type(data))
+            return None
+
+        return data
+
+    def _get_open_positions(self) -> Optional[List[Dict[str, Any]]]:
+        """Fetch open futures positions from Backpack API.
+
+        Instruction: positionQuery
+        Endpoint: GET /api/v1/position
+        """
+        instruction = "positionQuery"
+        params: Dict[str, Any] = {}
+        headers = self._sign(instruction, params)
+        url = f"{self._base_url}/api/v1/position"
+
+        try:
+            response = self._session.get(
+                url,
+                headers=headers,
+                timeout=self._timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Backpack positions request failed: %s", exc)
+            return None
+
+        if response.status_code != 200:
+            logging.warning(
+                "Backpack positions request HTTP %s: %s",
+                response.status_code,
+                response.text[:200] if response.text else "(empty)",
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError:
+            logging.warning("Backpack positions response is not valid JSON")
+            return None
+
+        logging.debug("Backpack positions raw response: %r", data)
+
+        if not isinstance(data, list):
+            # Single position or empty
+            if isinstance(data, dict):
+                logging.debug("Backpack positions: single dict response")
+                return [data] if data else []
+            return []
+
+        # Filter out positions with zero quantity
+        active_positions = []
+        for pos in data:
+            if not isinstance(pos, dict):
+                continue
+            # Try multiple possible field names for position quantity
+            net_qty = 0.0
+            for qty_field in ("netQuantity", "netExposureQuantity", "quantity", "size"):
+                raw_val = pos.get(qty_field)
+                if raw_val is not None:
+                    try:
+                        net_qty = float(raw_val)
+                        if net_qty != 0:
+                            logging.debug(
+                                "Backpack position %s: %s=%s",
+                                pos.get("symbol", "?"),
+                                qty_field,
+                                net_qty,
+                            )
+                            break
+                    except (TypeError, ValueError):
+                        continue
+            if net_qty != 0:
+                active_positions.append(pos)
+
+        logging.debug(
+            "Backpack positions: %d total, %d active",
+            len(data),
+            len(active_positions),
+        )
+        return active_positions

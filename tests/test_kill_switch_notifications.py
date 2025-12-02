@@ -43,7 +43,7 @@ class KillSwitchActivatedMessageTests(TestCase):
         self.assertIn("Kill\\-Switch 已激活", message)
         self.assertIn("2025-11-30T12:34:56+00:00", message)
         self.assertIn("3 个", message)
-        self.assertIn("/resume confirm", message)
+        self.assertIn("/resume", message)
 
     def test_message_formats_env_reason(self) -> None:
         """Activation message should format env:KILL_SWITCH reason correctly."""
@@ -131,7 +131,7 @@ class KillSwitchDeactivatedMessageTests(TestCase):
             reason="telegram:/resume",
         )
 
-        self.assertIn("/resume confirm", message)
+        self.assertIn("/resume", message)
 
     def test_message_formats_env_reason(self) -> None:
         """Deactivation message should format env:KILL_SWITCH reason correctly."""

@@ -323,16 +323,8 @@ docker run --rm -it \
 - `/config get KEY`：查看某个配置项的详情，包括当前值和合法取值说明。
 - `/config set KEY VALUE`：设置运行时覆盖值（runtime override），仅管理员可用，并会写入审计日志。
 
-当前支持的 4 个配置项为（与 `config/runtime_overrides.py` 中的白名单一致）：
+当前版本中，**可以通过 `/config` 直接修改的运行时配置项为 3 个**：
 
-- `TRADING_BACKEND`
-  - 含义：交易执行后端
-  - 合法值：`paper` / `hyperliquid` / `binance_futures` / `backpack_futures`
-  - 说明：决定 Bot *打算* 使用哪个执行后端；目前执行引擎在启动时根据该值初始化，**运行中修改不会在当前进程中热切换 backend**，主要用于检查/规划下一次重启生效的配置。
-- `MARKET_DATA_BACKEND`
-  - 含义：行情数据源
-  - 合法值：`binance` / `backpack`
-  - 说明：决定 K 线与价格数据来自哪个后端；当前实现中 market data client 会在启动时初始化并缓存，运行中修改主要用于观测 `get_effective_*` 行为，**实际切换建议在重启后完成**。
 - `TRADEBOT_INTERVAL`
   - 含义：交易循环的主时间框架（如 `15m`、`1h`）
   - 合法值：`1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`
@@ -348,6 +340,18 @@ docker run --rm -it \
   - 生效方式：
     - 通过 `/config set TRADEBOT_LLM_TEMPERATURE 1.2` 等命令设置后，**下一次 LLM 调用立即使用新的温度**；
     - 该值会体现在发送给 LLM 的请求 payload 中，并记录在 `data/ai_messages.csv` 的 metadata.temperature 字段中，方便回溯决策环境。
+- `TRADEBOT_LOOP_ENABLED`
+  - 含义：主循环总开关（`false` = 暂停 Bot 主循环，只保留 Telegram 等外围线程；`true` = 正常运行）
+  - 合法值：`true` / `false`（常见等价写法如 `1`/`0`、`on`/`off` 也会被解析）
+  - 生效方式：
+    - 当设置为 `false` 时，主循环会跳过交易逻辑，只按 `get_effective_check_interval()` 轮询休眠；
+    - 当设置为 `true` 时，主循环恢复正常迭代。
+
+此外，runtime overrides 层本身仍支持对 `TRADING_BACKEND` / `MARKET_DATA_BACKEND` 等 key 进行**进程内覆盖**，但当前实现中：
+
+- 这两个 backend 相关 key 只能通过 `.env` 与重启进程生效；
+- `/config` 命令不会接受 `TRADING_BACKEND` / `MARKET_DATA_BACKEND` 作为合法 key，输入时会返回「无效配置项」提示；
+- 建议继续使用 `.env` 管理交易/行情后端，避免在运行中试图热切换 backend 导致状态不一致。
 
 权限与风险提示：
 

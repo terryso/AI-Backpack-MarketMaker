@@ -555,7 +555,7 @@ def reset_daily_baseline(
     4. Resets daily_loss_triggered to False
 
     IMPORTANT: This function does NOT automatically deactivate Kill-Switch.
-    Users must explicitly call /resume confirm after /reset_daily to resume
+    Users must explicitly call /resume after /reset_daily to resume
     trading. This design prevents accidental resumption after large losses.
 
     Args:

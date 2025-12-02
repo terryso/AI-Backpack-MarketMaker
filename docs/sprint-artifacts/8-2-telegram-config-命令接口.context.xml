@@ -23,8 +23,8 @@
   </story>
 
   <acceptanceCriteria>
-    - AC1：在 Telegram Bot 中实现 `/config list`，返回 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE 四个白名单配置项的当前生效值，文案清晰，适合聊天窗口阅读。
-    - AC2：在 Telegram Bot 中实现 `/config get &lt;KEY&gt;`，对合法 key 返回当前值和合法取值范围/枚举说明，对非法 key 返回错误信息并列出支持的 key 列表。
+    - AC1：在 Telegram Bot 中实现 `/config list`，返回当前支持远程修改的运行时配置项（`TRADEBOT_INTERVAL`、`TRADEBOT_LLM_TEMPERATURE`、`TRADEBOT_LOOP_ENABLED`）的当前生效值，文案清晰，适合聊天窗口阅读。
+    - AC2：在 Telegram Bot 中实现 `/config get &lt;KEY&gt;`，对上述合法 key 返回当前值和合法取值范围/枚举说明，对非法 key 返回错误信息并列出受支持的 key 列表。
     - AC3：在 Telegram Bot 中实现 `/config set &lt;KEY&gt; &lt;VALUE&gt;`，对合法 key/value 通过 runtime overrides 层更新配置并返回 old_value/new_value，对非法 value 返回明确错误与合法值提示，不抛出未捕获异常。
   </acceptanceCriteria>
 
@@ -33,7 +33,7 @@
       - path: docs/epics.md
         title: LLM-trader-test - Epic Breakdown
         section: Story 8.2 - Telegram `/config` 命令接口
-        snippet: 描述 Epic 8 下的 Story 8.2，要求在 Telegram Bot 中实现 `/config list|get|set` 三个子命令，通过 runtime overrides 层修改 4 个白名单配置项，并对非法 key/value 返回清晰错误与合法取值范围说明。
+        snippet: 描述 Epic 8 下的 Story 8.2，要求在 Telegram Bot 中实现 `/config list|get|set` 三个子命令，通过 runtime overrides 层修改一组受控白名单运行时配置项（当前暴露为 TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE、TRADEBOT_LOOP_ENABLED），并对非法 key/value 返回清晰错误与合法取值范围说明。
       - path: docs/epics.md
         title: LLM-trader-test - Epic Breakdown
         section: Epic 8 - Telegram 远程运营配置管理（Runtime Config Control）
