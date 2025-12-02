@@ -244,6 +244,7 @@ class PublicAPITests(unittest.TestCase):
         self.assertIn("MARKET_DATA_BACKEND", whitelist)
         self.assertIn("TRADEBOT_INTERVAL", whitelist)
         self.assertIn("TRADEBOT_LLM_TEMPERATURE", whitelist)
+        self.assertIn("TRADEBOT_LOOP_ENABLED", whitelist)
 
     def test_get_all_runtime_overrides(self) -> None:
         """get_all_runtime_overrides should return all set overrides."""

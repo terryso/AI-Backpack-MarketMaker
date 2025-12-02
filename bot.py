@@ -48,6 +48,7 @@ from config.settings import (
     TRADING_BACKEND, BINANCE_FUTURES_LIVE, BACKPACK_FUTURES_LIVE,
     RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT,
     RISK_FREE_RATE,
+    get_effective_tradebot_loop_enabled,
 )
 
 
@@ -82,6 +83,10 @@ def get_effective_check_interval() -> int:
 def get_effective_llm_temperature() -> float:
     """Get the effective LLM temperature from environment or config."""
     return _config_settings.get_effective_llm_temperature()
+
+def get_effective_tradebot_loop_enabled() -> bool:
+    """Get the effective tradebot loop enabled from environment or config."""
+    return _config_settings.get_effective_tradebot_loop_enabled()
 
 # ───────────────────────── STATE MANAGEMENT ─────────────────────────
 import core.state as _core_state
@@ -820,13 +825,26 @@ def _run_iteration() -> None:
     iteration_counter = iteration
     clear_iteration_messages()
     
+    # Global loop switch: when disabled, skip trading logic and just sleep.
+    if not get_effective_tradebot_loop_enabled():
+        check_interval = get_effective_check_interval()
+        logging.info(
+            "TRADEBOT_LOOP_ENABLED is false; bot loop paused. Sleeping %ss before next check.",
+            check_interval,
+        )
+        sleep_with_countdown(check_interval)
+        return
+    
     # Capture current check interval for early retry logic (e.g., Binance client unavailable)
     initial_check_interval = get_effective_check_interval()
     
-    if not get_binance_client():
-        logging.warning("Binance client unavailable; retrying...")
-        time.sleep(min(initial_check_interval, 60))
-        return
+    # Only require Binance client when using Binance as market data backend.
+    # For Backpack 或其他后端，不强制依赖 Binance。
+    if MARKET_DATA_BACKEND == "binance":
+        if not get_binance_client():
+            logging.warning("Binance client unavailable; retrying...")
+            time.sleep(min(initial_check_interval, 60))
+            return
     
     # Header
     print(f"\n{Fore.CYAN}{'='*20}")

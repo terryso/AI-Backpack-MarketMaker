@@ -1150,7 +1150,17 @@ CONFIG_KEY_DESCRIPTIONS: dict[str, str] = {
     "MARKET_DATA_BACKEND": "行情数据源",
     "TRADEBOT_INTERVAL": "交易循环间隔",
     "TRADEBOT_LLM_TEMPERATURE": "LLM 采样温度",
+    "TRADEBOT_LOOP_ENABLED": "主循环总开关 (false=暂停 bot, true=恢复运行)",
 }
+
+# Config keys actually exposed via /config list|get|set.
+# 当前版本支持对 interval、LLM temperature 与 TRADEBOT_LOOP_ENABLED 进行运行时调整，
+# backend 两个 key 仍然由 .env + 重启决定。
+CONFIG_KEYS_FOR_TELEGRAM: tuple[str, ...] = (
+    "TRADEBOT_INTERVAL",
+    "TRADEBOT_LLM_TEMPERATURE",
+    "TRADEBOT_LOOP_ENABLED",
+)
 
 
 def _get_config_value_info(key: str) -> tuple[str, str]:
@@ -1167,6 +1177,7 @@ def _get_config_value_info(key: str) -> tuple[str, str]:
         get_effective_market_data_backend,
         get_effective_interval,
         get_effective_llm_temperature,
+        get_effective_tradebot_loop_enabled,
     )
     from config.runtime_overrides import (
         VALID_TRADING_BACKENDS,
@@ -1196,6 +1207,10 @@ def _get_config_value_info(key: str) -> tuple[str, str]:
         current = str(get_effective_llm_temperature())
         return current, f"范围: {LLM_TEMPERATURE_MIN} - {LLM_TEMPERATURE_MAX}"
     
+    if key == "TRADEBOT_LOOP_ENABLED":
+        current = "true" if get_effective_tradebot_loop_enabled() else "false"
+        return current, "可选值: true, false (仅影响当前进程的主循环，不修改 .env)"
+    
     return "N/A", "未知配置项"
 
 
@@ -1222,11 +1237,10 @@ def handle_config_list_command(cmd: TelegramCommand) -> CommandResult:
         cmd.message_id,
     )
     
-    whitelist = get_override_whitelist()
     lines = ["⚙️ *可配置项列表*\n"]
     
-    # Sort keys for consistent output
-    for key in sorted(whitelist):
+    # Only expose a curated subset of runtime-configurable keys to Telegram.
+    for key in CONFIG_KEYS_FOR_TELEGRAM:
         current_value, _ = _get_config_value_info(key)
         description = CONFIG_KEY_DESCRIPTIONS.get(key, key)
         # Escape special characters for MarkdownV2
@@ -1261,8 +1275,6 @@ def handle_config_get_command(cmd: TelegramCommand, key: str) -> CommandResult:
     References:
         - AC2: /config get <KEY> 返回当前值和合法取值范围/枚举说明
     """
-    from config.runtime_overrides import get_override_whitelist
-    
     logging.info(
         "Telegram /config get command received: chat_id=%s, message_id=%d, key=%s",
         cmd.chat_id,
@@ -1270,14 +1282,15 @@ def handle_config_get_command(cmd: TelegramCommand, key: str) -> CommandResult:
         key,
     )
     
-    whitelist = get_override_whitelist()
-    
     # Normalize key to uppercase for comparison
     normalized_key = key.strip().upper()
     
-    if normalized_key not in whitelist:
+    # Only a subset of keys are exposed via Telegram /config get.
+    if normalized_key not in CONFIG_KEYS_FOR_TELEGRAM:
         # Return error with list of supported keys
-        supported_keys = ", ".join(f"`{_escape_markdown(k)}`" for k in sorted(whitelist))
+        supported_keys = ", ".join(
+            f"`{_escape_markdown(k)}`" for k in CONFIG_KEYS_FOR_TELEGRAM
+        )
         message = (
             f"❌ *无效的配置项:* `{_escape_markdown(key)}`\n\n"
             f"支持的配置项:\n{supported_keys}"
@@ -1409,7 +1422,6 @@ def handle_config_set_command(
         - Story 8.3 AC3: 每次成功的 /config set 调用都会写入审计日志
     """
     from config.runtime_overrides import (
-        get_override_whitelist,
         validate_override_value,
         set_runtime_override,
         get_runtime_override,
@@ -1419,6 +1431,7 @@ def handle_config_set_command(
         get_effective_market_data_backend,
         get_effective_interval,
         get_effective_llm_temperature,
+        get_effective_tradebot_loop_enabled,
     )
     
     logging.info(
@@ -1468,15 +1481,15 @@ def handle_config_set_command(
             state_changed=False,
             action="CONFIG_SET_PERMISSION_DENIED",
         )
-    
-    whitelist = get_override_whitelist()
-    
     # Normalize key to uppercase for comparison
     normalized_key = key.strip().upper()
     
-    if normalized_key not in whitelist:
+    # Only a subset of keys are exposed via Telegram /config set.
+    if normalized_key not in CONFIG_KEYS_FOR_TELEGRAM:
         # Return error with list of supported keys
-        supported_keys = ", ".join(f"`{_escape_markdown(k)}`" for k in sorted(whitelist))
+        supported_keys = ", ".join(
+            f"`{_escape_markdown(k)}`" for k in CONFIG_KEYS_FOR_TELEGRAM
+        )
         message = (
             f"❌ *无效的配置项:* `{_escape_markdown(key)}`\n\n"
             f"支持的配置项:\n{supported_keys}"
@@ -1502,6 +1515,8 @@ def handle_config_set_command(
         old_value = get_effective_interval()
     elif normalized_key == "TRADEBOT_LLM_TEMPERATURE":
         old_value = str(get_effective_llm_temperature())
+    elif normalized_key == "TRADEBOT_LOOP_ENABLED":
+        old_value = "true" if get_effective_tradebot_loop_enabled() else "false"
     else:
         old_value = "N/A"
     
@@ -1537,6 +1552,8 @@ def handle_config_set_command(
         normalized_value = value.strip().lower()
     elif normalized_key == "TRADEBOT_LLM_TEMPERATURE":
         normalized_value = float(value)
+    elif normalized_key == "TRADEBOT_LOOP_ENABLED":
+        normalized_value = value.strip().lower()
     else:
         normalized_value = value
     

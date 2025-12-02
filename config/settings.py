@@ -186,7 +186,9 @@ class TradingConfig:
     hyperliquid_capital: float
     trading_backend: str
     market_data_backend: str
-    live_trading_enabled: Optional[bool]
+    # Global master switch: when True and backend is non-paper, live trading is enabled
+    live_trading_enabled: bool
+    # Per-backend derived flags (for convenience and logging)
     hyperliquid_live_trading: bool
     binance_futures_live: bool
     backpack_futures_live: bool
@@ -233,32 +235,17 @@ def load_trading_config_from_env() -> TradingConfig:
         )
         market_data_backend = "binance"
 
-    live_trading_env = os.getenv("LIVE_TRADING_ENABLED")
-    if live_trading_env is not None:
-        live_trading_enabled: Optional[bool] = _parse_bool_env(live_trading_env, default=False)
-    else:
-        live_trading_enabled = None
+    # Global live-trading master switch. When True and TRADING_BACKEND is a
+    # non-paper backend, live trading is enabled for that backend.
+    live_trading_enabled = _parse_bool_env(
+        os.getenv("LIVE_TRADING_ENABLED"),
+        default=False,
+    )
 
-    if live_trading_enabled is not None:
-        hyperliquid_live_trading = bool(live_trading_enabled and trading_backend == "hyperliquid")
-    else:
-        hyperliquid_live_trading = _parse_bool_env(
-            os.getenv("HYPERLIQUID_LIVE_TRADING"),
-            default=False,
-        )
-
-    if live_trading_enabled is not None:
-        binance_futures_live = bool(live_trading_enabled and trading_backend == "binance_futures")
-    else:
-        binance_futures_live = _parse_bool_env(
-            os.getenv("BINANCE_FUTURES_LIVE"),
-            default=False,
-        )
-
-    if live_trading_enabled is not None:
-        backpack_futures_live = bool(live_trading_enabled and trading_backend == "backpack_futures")
-    else:
-        backpack_futures_live = False
+    # Derive per-backend live flags from the global switch and selected backend.
+    hyperliquid_live_trading = bool(live_trading_enabled and trading_backend == "hyperliquid")
+    binance_futures_live = bool(live_trading_enabled and trading_backend == "binance_futures")
+    backpack_futures_live = bool(live_trading_enabled and trading_backend == "backpack_futures")
 
     binance_futures_max_risk_usd = _parse_float_env(
         os.getenv("BINANCE_FUTURES_MAX_RISK_USD"),
@@ -305,7 +292,7 @@ def load_trading_config_from_env() -> TradingConfig:
         hyperliquid_capital=hyperliquid_capital,
         trading_backend=trading_backend,
         market_data_backend=market_data_backend,
-        live_trading_enabled=live_trading_enabled,
+        live_trading_enabled=bool(live_trading_enabled),
         hyperliquid_live_trading=hyperliquid_live_trading,
         binance_futures_live=binance_futures_live,
         backpack_futures_live=backpack_futures_live,
@@ -737,6 +724,58 @@ def get_effective_llm_temperature() -> float:
     
     # Fall back to module-level value (loaded from env at import time)
     return LLM_TEMPERATURE
+
+
+def get_effective_live_trading_enabled() -> bool:
+    """Get the effective LIVE_TRADING_ENABLED flag with override priority.
+    
+    Priority: runtime override > env/default (LIVE_TRADING_ENABLED constant).
+    
+    Returns:
+        True if live trading is effectively enabled for the selected backend,
+        False otherwise.
+    """
+    from config.runtime_overrides import get_runtime_override
+    
+    override = get_runtime_override("LIVE_TRADING_ENABLED")
+    if override is not None:
+        normalized = str(override).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid LIVE_TRADING_ENABLED override '{override}'; ignoring and using env/default."
+        )
+    return bool(LIVE_TRADING_ENABLED)
+
+
+def get_effective_tradebot_loop_enabled() -> bool:
+    """Get the effective TRADEBOT_LOOP_ENABLED flag with override priority.
+
+    Priority: runtime override > env/default (True).
+
+    This flag controls whether the main trading loop actively runs `_run_iteration`
+    logic or stays in a paused state between iterations.
+    """
+    from config.runtime_overrides import get_runtime_override
+
+    override = get_runtime_override("TRADEBOT_LOOP_ENABLED")
+    if override is not None:
+        normalized = str(override).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid TRADEBOT_LOOP_ENABLED override '{override}'; ignoring and using env/default."
+        )
+
+    # Env fallback; default to True so existing behaviour is preserved
+    env_value = os.getenv("TRADEBOT_LOOP_ENABLED")
+    if env_value is not None:
+        return _parse_bool_env(env_value, default=True)
+    return True
 
 
 def get_telegram_admin_user_id() -> str:

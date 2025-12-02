@@ -25,6 +25,7 @@ OVERRIDE_WHITELIST: Set[str] = frozenset({
     "MARKET_DATA_BACKEND",
     "TRADEBOT_INTERVAL",
     "TRADEBOT_LLM_TEMPERATURE",
+    "TRADEBOT_LOOP_ENABLED",
 })
 
 # Valid values for enum-like keys
@@ -247,6 +248,15 @@ def validate_override_value(key: str, value: Any) -> tuple[bool, Optional[str]]:
                 f"[{LLM_TEMPERATURE_MIN}, {LLM_TEMPERATURE_MAX}]"
             )
         return True, None
+    
+    if key == "LIVE_TRADING_ENABLED":
+        # Accept common boolean-like representations
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True, None
+        if normalized in {"0", "false", "no", "off"}:
+            return True, None
+        return False, f"Invalid LIVE_TRADING_ENABLED '{value}'; must be a boolean (true/false)"
     
     # Default: accept any value for unknown keys (shouldn't reach here due to whitelist check)
     return True, None

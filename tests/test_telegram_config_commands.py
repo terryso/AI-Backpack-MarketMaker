@@ -26,6 +26,7 @@ from notifications.telegram_commands import (
     handle_config_get_command,
     handle_config_set_command,
     CONFIG_KEY_DESCRIPTIONS,
+    CONFIG_KEYS_FOR_TELEGRAM,
     _get_config_value_info,
     _check_admin_permission,
     _log_config_audit,
@@ -73,10 +74,8 @@ class TestConfigListCommand:
         assert result.action == "CONFIG_LIST"
         assert result.state_changed is False
 
-        # Check that all 4 keys are mentioned in the message
-        whitelist = get_override_whitelist()
-        assert len(whitelist) == 4
-        for key in whitelist:
+        # Check that all exposed keys are mentioned in the message
+        for key in CONFIG_KEYS_FOR_TELEGRAM:
             assert key in result.message or key.replace("_", "\\_") in result.message
 
     def test_config_list_shows_current_values(self):
@@ -105,20 +104,18 @@ class TestConfigGetCommand:
         cmd = _make_config_command(["get", "TRADING_BACKEND"])
         result = handle_config_get_command(cmd, "TRADING_BACKEND")
 
-        assert result.success is True
-        assert result.action == "CONFIG_GET"
-        assert "TRADING_BACKEND" in result.message or "TRADING\\_BACKEND" in result.message
-        # Should mention valid options
-        assert "可选值" in result.message or "paper" in result.message.lower()
+        # 当前版本不再通过 /config 暴露 backend 相关配置，应视为无效 key
+        assert result.success is False
+        assert result.action == "CONFIG_GET_INVALID_KEY"
 
     def test_config_get_valid_key_market_data_backend(self):
         """AC2: /config get MARKET_DATA_BACKEND returns current value and valid options."""
         cmd = _make_config_command(["get", "MARKET_DATA_BACKEND"])
         result = handle_config_get_command(cmd, "MARKET_DATA_BACKEND")
 
-        assert result.success is True
-        assert result.action == "CONFIG_GET"
-        assert "binance" in result.message.lower() or "backpack" in result.message.lower()
+        # 当前版本不再通过 /config 暴露 backend 相关配置，应视为无效 key
+        assert result.success is False
+        assert result.action == "CONFIG_GET_INVALID_KEY"
 
     def test_config_get_valid_key_interval(self):
         """AC2: /config get TRADEBOT_INTERVAL returns current value and valid options."""
@@ -148,13 +145,13 @@ class TestConfigGetCommand:
         assert result.success is False
         assert result.action == "CONFIG_GET_INVALID_KEY"
         assert "无效" in result.message or "Invalid" in result.message
-        # Should list supported keys
-        assert "TRADING_BACKEND" in result.message or "TRADING\\_BACKEND" in result.message
+        # Should list supported keys (interval & temperature)
+        assert "TRADEBOT_INTERVAL" in result.message or "TRADEBOT\\_INTERVAL" in result.message
 
     def test_config_get_case_insensitive(self):
         """AC2: /config get should be case-insensitive for key names."""
-        cmd = _make_config_command(["get", "trading_backend"])
-        result = handle_config_get_command(cmd, "trading_backend")
+        cmd = _make_config_command(["get", "tradebot_interval"])
+        result = handle_config_get_command(cmd, "tradebot_interval")
 
         assert result.success is True
         assert result.action == "CONFIG_GET"
@@ -183,17 +180,9 @@ class TestConfigSetCommand:
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
             result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
 
-        assert result.success is True
-        assert result.action == "CONFIG_SET"
-        assert result.state_changed is True
-        # Should show old and new values
-        assert "原值" in result.message or "old" in result.message.lower()
-        assert "新值" in result.message or "new" in result.message.lower()
-        assert "hyperliquid" in result.message.lower()
-
-        # Verify the override was actually set
-        override = get_runtime_override("TRADING_BACKEND")
-        assert override == "hyperliquid"
+        # Backend key 不再可通过 /config set 修改，应当返回 INVALID_KEY
+        assert result.success is False
+        assert result.action == "CONFIG_SET_INVALID_KEY"
 
     def test_config_set_valid_market_data_backend(self):
         """AC3: /config set MARKET_DATA_BACKEND with valid value updates config."""
@@ -202,9 +191,9 @@ class TestConfigSetCommand:
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
             result = handle_config_set_command(cmd, "MARKET_DATA_BACKEND", "backpack")
 
-        assert result.success is True
-        assert result.state_changed is True
-        assert get_runtime_override("MARKET_DATA_BACKEND") == "backpack"
+        # Backend key 不再可通过 /config set 修改，应当返回 INVALID_KEY
+        assert result.success is False
+        assert result.action == "CONFIG_SET_INVALID_KEY"
 
     def test_config_set_valid_interval(self):
         """AC3: /config set TRADEBOT_INTERVAL with valid value updates config."""
@@ -246,11 +235,9 @@ class TestConfigSetCommand:
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
             result = handle_config_set_command(cmd, "TRADING_BACKEND", "invalid_backend")
 
+        # Backend key 本身在 /config 中无效，应直接走 INVALID_KEY
         assert result.success is False
-        assert result.action == "CONFIG_SET_INVALID_VALUE"
-        assert "无效" in result.message
-        # Should show valid options
-        assert "可选值" in result.message or "paper" in result.message.lower()
+        assert result.action == "CONFIG_SET_INVALID_KEY"
 
     def test_config_set_invalid_interval_value(self):
         """AC3: /config set TRADEBOT_INTERVAL with invalid value returns error."""
@@ -286,13 +273,13 @@ class TestConfigSetCommand:
 
     def test_config_set_case_insensitive_key(self):
         """AC3: /config set should be case-insensitive for key names."""
-        cmd = _make_config_command(["set", "trading_backend", "paper"], user_id="admin123")
+        cmd = _make_config_command(["set", "tradebot_interval", "5m"], user_id="admin123")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_config_set_command(cmd, "trading_backend", "paper")
+            result = handle_config_set_command(cmd, "tradebot_interval", "5m")
 
         assert result.success is True
-        assert get_runtime_override("TRADING_BACKEND") == "paper"
+        assert get_runtime_override("TRADEBOT_INTERVAL") == "5m"
 
     def test_config_set_missing_key_via_main_handler(self):
         """Test /config set without key via main handler."""
@@ -343,14 +330,14 @@ class TestConfigMainHandler:
 
     def test_config_get_dispatches_correctly(self):
         """Test /config get KEY dispatches to get handler."""
-        cmd = _make_config_command(["get", "TRADING_BACKEND"])
+        cmd = _make_config_command(["get", "TRADEBOT_INTERVAL"])
         result = handle_config_command(cmd)
 
         assert result.action == "CONFIG_GET"
 
     def test_config_set_dispatches_correctly(self):
         """Test /config set KEY VALUE dispatches to set handler."""
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "paper"], user_id="admin123")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="admin123")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
             result = handle_config_command(cmd)
@@ -419,30 +406,30 @@ class TestConfigSetUsesRuntimeOverridesAPI:
     def test_config_set_uses_runtime_overrides_api(self):
         """AC3: /config set should use runtime overrides API, not os.environ directly."""
         # Verify by checking that the override is set via the API
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "hyperliquid"], user_id="admin123")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="admin123")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
+            result = handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
 
         assert result.success is True
         # The override should be accessible via the runtime overrides API
-        override = get_runtime_override("TRADING_BACKEND")
-        assert override == "hyperliquid"
+        override = get_runtime_override("TRADEBOT_INTERVAL")
+        assert override == "5m"
 
     def test_config_set_does_not_modify_os_environ(self):
         """AC3: /config set should not directly modify os.environ."""
         import os
 
-        original_env = os.environ.get("TRADING_BACKEND")
+        original_env = os.environ.get("TRADEBOT_INTERVAL")
 
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "hyperliquid"], user_id="admin123")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="admin123")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
+            result = handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
 
         assert result.success is True
         # os.environ should not be changed
-        assert os.environ.get("TRADING_BACKEND") == original_env
+        assert os.environ.get("TRADEBOT_INTERVAL") == original_env
 
 
 class TestConfigCommandIntegration:
@@ -574,15 +561,15 @@ class TestConfigSetPermissionControl:
 
     def test_config_set_allowed_for_admin_user(self):
         """AC2: /config set should succeed when user is admin."""
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "hyperliquid"], user_id="admin123")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="admin123")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
+            result = handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
         
         assert result.success is True
         assert result.action == "CONFIG_SET"
         assert result.state_changed is True
-        assert get_runtime_override("TRADING_BACKEND") == "hyperliquid"
+        assert get_runtime_override("TRADEBOT_INTERVAL") == "5m"
 
     def test_config_set_denied_for_non_admin_user(self):
         """AC2: /config set should be denied for non-admin users."""
@@ -616,10 +603,10 @@ class TestConfigSetPermissionControl:
 
     def test_config_set_permission_denied_message_suggests_read_commands(self):
         """AC2: Permission denied message should suggest using read-only commands."""
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "hyperliquid"], user_id="user456")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="user456")
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
+            result = handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
         
         assert result.success is False
         # Message should suggest list/get commands
@@ -635,13 +622,25 @@ class TestConfigSetPermissionControl:
 
     def test_config_get_allowed_for_any_user(self):
         """AC2: /config get should work for any user (read-only)."""
-        cmd = _make_config_command(["get", "TRADING_BACKEND"], user_id="any_user")
-        result = handle_config_get_command(cmd, "TRADING_BACKEND")
+        cmd = _make_config_command(["get", "TRADEBOT_INTERVAL"], user_id="any_user")
+        result = handle_config_get_command(cmd, "TRADEBOT_INTERVAL")
         
         assert result.success is True
         assert result.action == "CONFIG_GET"
 
+    def test_config_get_allowed_for_any_user_llm_temperature(self):
+        """AC2: /config get should work for any user (read-only)."""
+        cmd = _make_config_command(["get", "TRADEBOT_LLM_TEMPERATURE"], user_id="any_user")
+        result = handle_config_get_command(cmd, "TRADEBOT_LLM_TEMPERATURE")
+        
+        assert result.success is True
+        assert result.action == "CONFIG_GET"
 
+    def test_config_get_invalid_key_trading_backend(self):
+        """AC2: /config get should fail for invalid key."""
+        cmd = _make_config_command(["get", "TRADING_BACKEND"], user_id="any_user")
+        result = handle_config_get_command(cmd, "TRADING_BACKEND")
+        
 # ═══════════════════════════════════════════════════════════════════
 # Story 8.3: Audit Logging Tests (AC3)
 # ═══════════════════════════════════════════════════════════════════
@@ -652,11 +651,11 @@ class TestConfigAuditLogging:
 
     def test_audit_log_written_on_successful_config_set(self, caplog):
         """AC3: Successful /config set should write audit log."""
-        cmd = _make_config_command(["set", "TRADING_BACKEND", "hyperliquid"], user_id="admin123")
+        cmd = _make_config_command(["set", "TRADEBOT_INTERVAL", "5m"], user_id="admin123")
         
         with caplog.at_level(logging.WARNING):
             with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-                result = handle_config_set_command(cmd, "TRADING_BACKEND", "hyperliquid")
+                result = handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
         
         assert result.success is True
         
@@ -666,8 +665,8 @@ class TestConfigAuditLogging:
         
         audit_message = audit_logs[0].message
         assert "user_id=admin123" in audit_message
-        assert "key=TRADING_BACKEND" in audit_message
-        assert "new_value=hyperliquid" in audit_message
+        assert "key=TRADEBOT_INTERVAL" in audit_message
+        assert "new_value=5m" in audit_message
         assert "success=True" in audit_message
 
     def test_audit_log_contains_timestamp(self, caplog):
@@ -712,7 +711,7 @@ class TestConfigAuditLogging:
         
         with caplog.at_level(logging.WARNING):
             with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-                handle_config_set_command(cmd, "TRADING_BACKEND", "paper")
+                handle_config_set_command(cmd, "TRADEBOT_INTERVAL", "5m")
         
         audit_logs = [r for r in caplog.records if "CONFIG_AUDIT" in r.message]
         assert len(audit_logs) >= 1
@@ -754,7 +753,7 @@ class TestConfigAuditLogging:
         
         with caplog.at_level(logging.WARNING):
             with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-                result = handle_config_set_command(cmd, "TRADING_BACKEND", "invalid_backend")
+                result = handle_config_set_command(cmd, "TRADEBOT_LLM_TEMPERATURE", "invalid")
         
         assert result.success is False
         
@@ -847,6 +846,7 @@ class TestConfigPermissionIntegration:
             "MARKET_DATA_BACKEND": "binance",
             "TRADEBOT_INTERVAL": "5m",
             "TRADEBOT_LLM_TEMPERATURE": "0.5",
+            "TRADEBOT_LOOP_ENABLED": "false",
         }
         
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
@@ -854,5 +854,11 @@ class TestConfigPermissionIntegration:
                 cmd = _make_config_command(["set", key, value], user_id="admin123")
                 result = handle_config_set_command(cmd, key, value)
                 
-                assert result.success is True, f"Failed to set {key}"
-                assert result.action == "CONFIG_SET"
+                if key in ("TRADEBOT_INTERVAL", "TRADEBOT_LLM_TEMPERATURE", "TRADEBOT_LOOP_ENABLED"):
+                    # Interval、LLM temperature 和 TRADEBOT_LOOP_ENABLED 应当可以通过 /config set 成功修改
+                    assert result.success is True, f"Failed to set {key}"
+                    assert result.action == "CONFIG_SET"
+                else:
+                    # backend 两个 key 当前版本不再通过 /config set 暴露
+                    assert result.success is False
+                    assert result.action == "CONFIG_SET_INVALID_KEY"

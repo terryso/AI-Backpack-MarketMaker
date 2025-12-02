@@ -18,7 +18,8 @@ class RecalculatePortfolioTests(unittest.TestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "HYPERLIQUID_LIVE_TRADING": "false",
+                "TRADING_BACKEND": "hyperliquid",
+                "LIVE_TRADING_ENABLED": "false",
                 "PAPER_START_CAPITAL": "12345.6",
             },
             clear=True,
@@ -30,7 +31,8 @@ class RecalculatePortfolioTests(unittest.TestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "HYPERLIQUID_LIVE_TRADING": "true",
+                "TRADING_BACKEND": "hyperliquid",
+                "LIVE_TRADING_ENABLED": "true",
                 "HYPERLIQUID_CAPITAL": "789.0",
             },
             clear=True,
@@ -41,7 +43,10 @@ class RecalculatePortfolioTests(unittest.TestCase):
     def test_detect_starting_capital_defaults_for_live(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"HYPERLIQUID_LIVE_TRADING": "true"},
+            {
+                "TRADING_BACKEND": "hyperliquid",
+                "LIVE_TRADING_ENABLED": "true",
+            },
             clear=True,
         ):
             value = rp.detect_starting_capital()
