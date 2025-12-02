@@ -26,6 +26,7 @@ from config.settings import (
     TELEGRAM_SIGNALS_CHAT_ID,
     RISK_CONTROL_ENABLED,
 )
+from config import get_effective_coin_universe
 from core.metrics import (
     calculate_pnl_for_price,
     format_leverage_display,
@@ -563,7 +564,19 @@ class TradeExecutor:
         Args:
             decisions: Dictionary of AI decisions keyed by coin.
         """
-        for coin in SYMBOL_TO_COIN.values():
+        coin_universe = get_effective_coin_universe()
+        
+        # Warn about positions outside current Universe (orphaned positions)
+        # These will still be managed by SL/TP but won't receive LLM decisions
+        orphaned_coins = set(self.positions.keys()) - set(coin_universe)
+        if orphaned_coins:
+            logging.warning(
+                "Positions exist outside current Universe and will not receive LLM decisions: %s. "
+                "These positions are still managed by SL/TP logic.",
+                sorted(orphaned_coins),
+            )
+        
+        for coin in coin_universe:
             if coin not in decisions:
                 continue
 

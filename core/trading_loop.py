@@ -46,6 +46,7 @@ from config.settings import (
     TRADES_CSV,
     DECISIONS_CSV,
 )
+from config import get_effective_coin_universe
 from core.state import (
     get_balance,
     set_balance,
@@ -638,8 +639,19 @@ def process_ai_decisions(
 ) -> None:
     """Handle AI decisions for each tracked coin."""
     positions = get_positions()
+    coin_universe = get_effective_coin_universe()
 
-    for coin in SYMBOL_TO_COIN.values():
+    # Warn about positions outside current Universe (orphaned positions)
+    # These will still be managed by SL/TP but won't receive LLM decisions
+    orphaned_coins = set(positions.keys()) - set(coin_universe)
+    if orphaned_coins:
+        logging.warning(
+            "Positions exist outside current Universe and will not receive LLM decisions: %s. "
+            "These positions are still managed by SL/TP logic.",
+            sorted(orphaned_coins),
+        )
+
+    for coin in coin_universe:
         if coin not in decisions:
             continue
 

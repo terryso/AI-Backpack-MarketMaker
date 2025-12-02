@@ -51,6 +51,7 @@ from config.settings import (
     get_effective_tradebot_loop_enabled,
     BACKPACK_API_PUBLIC_KEY, BACKPACK_API_SECRET_SEED, BACKPACK_API_WINDOW_MS,
 )
+from config import get_effective_coin_universe
 
 
 def refresh_llm_configuration_from_env() -> None:
@@ -717,7 +718,19 @@ def process_ai_decisions(
         kill_switch_reason: The reason for Kill-Switch activation (for logging).
     """
     executor = _get_executor()
-    for coin in SYMBOL_TO_COIN.values():
+    coin_universe = get_effective_coin_universe()
+    
+    # Warn about positions outside current Universe (orphaned positions)
+    # These will still be managed by SL/TP but won't receive LLM decisions
+    orphaned_coins = set(positions.keys()) - set(coin_universe)
+    if orphaned_coins:
+        logging.warning(
+            "Positions exist outside current Universe and will not receive LLM decisions: %s. "
+            "These positions are still managed by SL/TP logic.",
+            sorted(orphaned_coins),
+        )
+    
+    for coin in coin_universe:
         if coin not in decisions:
             continue
         decision = decisions[coin]
@@ -884,7 +897,8 @@ def main() -> None:
         return
     
     logging.info(f"Starting capital: ${START_CAPITAL:.2f}")
-    logging.info(f"Monitoring: {', '.join(SYMBOL_TO_COIN.values())}")
+    monitoring_coins = get_effective_coin_universe()
+    logging.info(f"Monitoring: {', '.join(monitoring_coins)}")
     
     # Log trading backend status
     if hyperliquid_trader.is_live:

@@ -93,9 +93,9 @@ development_status:
   epic-8-retrospective: optional
 
   # === Epic 9: 可配置交易对 Universe & Telegram 管理 ===
-  epic-9: backlog
-  9-1-可配置交易-universe-抽象-paper-live: backlog
-  9-2-telegram-symbols-命令接口-list-add-remove: backlog
+  epic-9: in-progress
+  9-1-可配置交易-universe-抽象-paper-live: done
+  9-2-telegram-symbols-命令接口-list-add-remove: done
   9-3-基于-market-data-backend-的-symbol-校验: backlog
   9-4-行为约定-日志与文档更新: backlog
   epic-9-retrospective: optional

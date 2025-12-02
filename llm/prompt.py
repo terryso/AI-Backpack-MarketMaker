@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 
 from config.settings import (
-    SYMBOLS,
     SYMBOL_TO_COIN,
     INTERVAL,
     START_CAPITAL,
@@ -23,6 +22,7 @@ from config.settings import (
     MACD_SLOW,
     MACD_SIGNAL,
 )
+from config import get_effective_symbol_universe
 from strategy.snapshot import build_market_snapshot as _strategy_build_market_snapshot
 from strategy.indicators import (
     add_indicator_columns,
@@ -493,15 +493,20 @@ def format_prompt_for_deepseek(
     positions = get_positions()
     balance = get_balance()
 
-    logging.info("Collecting market data for %d symbols...", len(SYMBOLS))
+    symbol_universe = get_effective_symbol_universe()
+    logging.info("Collecting market data for %d symbols...", len(symbol_universe))
     market_snapshots: Dict[str, Dict[str, Any]] = {}
-    for symbol in SYMBOLS:
+    for symbol in symbol_universe:
         logging.debug("Fetching market snapshot for %s...", symbol)
         snapshot = collect_prompt_market_data(symbol, get_market_data_client, interval)
         if snapshot:
             market_snapshots[snapshot["coin"]] = snapshot
             logging.debug("Got snapshot for %s: price=%.4f", snapshot["coin"], snapshot.get("price", 0))
-    logging.info("Collected market data for %d/%d symbols", len(market_snapshots), len(SYMBOLS))
+    logging.info(
+        "Collected market data for %d/%d symbols",
+        len(market_snapshots),
+        len(symbol_universe),
+    )
 
     total_margin = calculate_total_margin()
     total_equity = balance + total_margin

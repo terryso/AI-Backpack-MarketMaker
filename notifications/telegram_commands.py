@@ -390,6 +390,9 @@ COMMAND_REGISTRY: list[tuple[str, str]] = [
     ("/config list", "列出可配置项及当前值"),
     ("/config get KEY", "查看指定配置项详情"),
     ("/config set KEY VALUE", "修改运行时配置"),
+    ("/symbols list", "查看当前交易 Universe"),
+    ("/symbols add SYMBOL", "添加交易对到 Universe（管理员）"),
+    ("/symbols remove SYMBOL", "从 Universe 移除交易对（管理员）"),
     ("/help", "显示此帮助信息"),
 ]
 
@@ -1818,6 +1821,583 @@ def handle_config_command(cmd: TelegramCommand) -> CommandResult:
     )
 
 
+# ═══════════════════════════════════════════════════════════════════
+# SYMBOLS COMMAND HANDLERS (Story 9.2)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _log_symbols_audit(
+    *,
+    action: str,
+    symbol: str,
+    user_id: str,
+    chat_id: str,
+    old_universe: List[str],
+    new_universe: List[str],
+    success: bool,
+) -> None:
+    """Write structured audit log for symbol universe changes.
+    
+    This function logs Universe modifications in a structured format
+    for security auditing and compliance purposes.
+    
+    Args:
+        action: Action type (ADD or REMOVE).
+        symbol: The symbol being added or removed.
+        user_id: Telegram user ID of the requester.
+        chat_id: Chat ID where the command was received.
+        old_universe: Universe before the change.
+        new_universe: Universe after the change.
+        success: Whether the change was successful.
+    """
+    from datetime import datetime, timezone
+    
+    timestamp = datetime.now(timezone.utc).isoformat()
+    
+    # Audit log for symbol universe changes (Story 9.4 alignment)
+    # Using WARNING level as this is a security-relevant event
+    logging.warning(
+        "SYMBOLS_AUDIT | action=%s | symbol=%s | user_id=%s | chat_id=%s | "
+        "old_universe=%s | new_universe=%s | success=%s | timestamp=%s",
+        action,
+        symbol,
+        user_id,
+        chat_id,
+        old_universe,
+        new_universe,
+        success,
+        timestamp,
+    )
+
+
+def _check_symbols_admin_permission(cmd: TelegramCommand) -> tuple[bool, str]:
+    """Check if the command sender is authorized to modify the Universe.
+    
+    This function reuses the same admin permission logic as /config set.
+    
+    Args:
+        cmd: The TelegramCommand object containing user_id.
+        
+    Returns:
+        Tuple of (is_admin, admin_user_id).
+        is_admin is True if the sender is authorized.
+        admin_user_id is the configured admin ID (for logging).
+    """
+    # Reuse the existing admin permission check
+    return _check_admin_permission(cmd)
+
+
+def _normalize_symbol(symbol: str) -> str:
+    """Normalize a symbol string to uppercase without whitespace.
+    
+    Args:
+        symbol: Raw symbol input (e.g., "btcusdt", " BTCUSDT ").
+        
+    Returns:
+        Normalized symbol (e.g., "BTCUSDT").
+    """
+    return symbol.strip().upper()
+
+
+def validate_symbol_for_universe(symbol: str) -> tuple[bool, str]:
+    """Validate if a symbol is valid for the current MARKET_DATA_BACKEND.
+    
+    This is a placeholder implementation for Story 9.2. The actual validation
+    logic will be implemented in Story 9.3 based on the MARKET_DATA_BACKEND.
+    
+    For now, this function checks if the symbol exists in SYMBOL_TO_COIN,
+    which is the minimal validation required by Story 9.1's subset-only
+    filtering constraint.
+    
+    Args:
+        symbol: Normalized symbol to validate (e.g., "BTCUSDT").
+        
+    Returns:
+        Tuple of (is_valid, error_message).
+        is_valid is True if the symbol is valid.
+        error_message contains the reason if invalid.
+    """
+    from config.universe import validate_symbol_for_universe as _validate_symbol_for_universe
+
+    return _validate_symbol_for_universe(symbol)
+
+
+def handle_symbols_list_command(cmd: TelegramCommand) -> CommandResult:
+    """Handle the /symbols list subcommand to display current Universe.
+    
+    This function returns the current effective symbol Universe in a
+    format suitable for Telegram chat display.
+    
+    Args:
+        cmd: The TelegramCommand object for /symbols list.
+        
+    Returns:
+        CommandResult with success status and Universe list message.
+        
+    References:
+        - Story 9.2 AC1: /symbols list 展示当前 Universe
+    """
+    from config.universe import get_effective_symbol_universe
+    
+    logging.info(
+        "Telegram /symbols list command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+    
+    universe = get_effective_symbol_universe()
+    
+    if not universe:
+        message = (
+            "📋 *当前交易 Universe*\n\n"
+            "⚠️ Universe 为空，系统不会开启任何新交易。\n\n"
+            "💡 使用 `/symbols add SYMBOL` 添加交易对"
+        )
+    else:
+        # Sort symbols alphabetically for stable display
+        sorted_symbols = sorted(universe)
+        symbol_list = "\n".join(f"• `{_escape_markdown(s)}`" for s in sorted_symbols)
+        count = len(sorted_symbols)
+        message = (
+            f"📋 *当前交易 Universe* \\({count} 个\\)\n\n"
+            f"{symbol_list}\n\n"
+            "💡 使用 `/symbols add` 或 `/symbols remove` 管理交易对"
+        )
+    
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="SYMBOLS_LIST",
+    )
+
+
+def handle_symbols_add_command(
+    cmd: TelegramCommand,
+    symbol: str,
+) -> CommandResult:
+    """Handle the /symbols add <SYMBOL> subcommand to add a symbol to Universe.
+    
+    This function implements admin-only permission control and symbol
+    validation before adding to the Universe.
+    
+    Args:
+        cmd: The TelegramCommand object for /symbols add.
+        symbol: The symbol to add (raw input, will be normalized).
+        
+    Returns:
+        CommandResult with success status and result message.
+        
+    References:
+        - Story 9.2 AC2: /symbols add 成功路径
+        - Story 9.2 AC3: 非管理员 & 校验失败路径
+    """
+    from config.universe import get_effective_symbol_universe, set_symbol_universe
+    
+    logging.info(
+        "Telegram /symbols add command received: chat_id=%s, message_id=%d, "
+        "user_id=%s, symbol=%s",
+        cmd.chat_id,
+        cmd.message_id,
+        cmd.user_id,
+        symbol,
+    )
+    
+    # ─────────────────────────────────────────────────────────────────
+    # Permission Check: Only admin can execute /symbols add
+    # ─────────────────────────────────────────────────────────────────
+    is_admin, admin_user_id = _check_symbols_admin_permission(cmd)
+    
+    if not is_admin:
+        logging.warning(
+            "Telegram /symbols add: permission denied | user_id=%s | "
+            "admin_user_id=%s | chat_id=%s | symbol=%s",
+            cmd.user_id,
+            admin_user_id if admin_user_id else "(not configured)",
+            cmd.chat_id,
+            symbol,
+        )
+        
+        if not admin_user_id:
+            message = (
+                "🔒 *无权限修改 Universe*\n\n"
+                "管理员 User ID 未配置，所有修改请求已被拒绝。\n\n"
+                "💡 请在 `.env` 中设置 `TELEGRAM_ADMIN_USER_ID` 后重启 Bot。\n"
+                "📖 您仍可使用 `/symbols list` 查看当前 Universe。"
+            )
+        else:
+            message = (
+                "🔒 *无权限修改 Universe*\n\n"
+                "您没有权限执行此操作，只能查看 Universe。\n\n"
+                "📖 您可以使用 `/symbols list` 查看当前 Universe。"
+            )
+        
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_ADD_PERMISSION_DENIED",
+        )
+    
+    # Normalize symbol
+    normalized_symbol = _normalize_symbol(symbol)
+    
+    if not normalized_symbol:
+        message = (
+            "❌ *缺少参数*\n\n"
+            "用法: `/symbols add SYMBOL`\n\n"
+            "💡 示例: `/symbols add BTCUSDT`"
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_ADD_MISSING_SYMBOL",
+        )
+    
+    # ─────────────────────────────────────────────────────────────────
+    # Symbol Validation (Story 9.3 interface)
+    # ─────────────────────────────────────────────────────────────────
+    is_valid, error_msg = validate_symbol_for_universe(normalized_symbol)
+    
+    if not is_valid:
+        message = (
+            f"❌ *无效的交易对*\n\n"
+            f"*Symbol:* `{_escape_markdown(normalized_symbol)}`\n"
+            f"*错误:* {_escape_markdown(error_msg)}\n\n"
+            "💡 请检查交易对名称是否正确"
+        )
+        logging.warning(
+            "Telegram /symbols add: invalid symbol '%s' | chat_id=%s | error=%s",
+            normalized_symbol,
+            cmd.chat_id,
+            error_msg,
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_ADD_INVALID_SYMBOL",
+        )
+    
+    # Get current Universe
+    old_universe = get_effective_symbol_universe()
+    
+    # Check if already in Universe
+    if normalized_symbol in old_universe:
+        message = (
+            f"ℹ️ *Symbol 已存在*\n\n"
+            f"`{_escape_markdown(normalized_symbol)}` 已在当前 Universe 中，无需重复添加。\n\n"
+            f"*当前 Universe:* {len(old_universe)} 个交易对"
+        )
+        logging.info(
+            "Telegram /symbols add: symbol '%s' already in universe | chat_id=%s",
+            normalized_symbol,
+            cmd.chat_id,
+        )
+        return CommandResult(
+            success=True,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_ADD_ALREADY_EXISTS",
+        )
+    
+    # Add symbol to Universe
+    new_universe = old_universe + [normalized_symbol]
+    set_symbol_universe(new_universe)
+    
+    # Verify the change
+    actual_universe = get_effective_symbol_universe()
+    
+    # Build response message
+    message = (
+        f"✅ *Symbol 已添加*\n\n"
+        f"*新增:* `{_escape_markdown(normalized_symbol)}`\n"
+        f"*原 Universe:* {len(old_universe)} 个交易对\n"
+        f"*新 Universe:* {len(actual_universe)} 个交易对\n\n"
+        "📈 新交易对将在下一轮循环中生效"
+    )
+    
+    # Audit log
+    _log_symbols_audit(
+        action="ADD",
+        symbol=normalized_symbol,
+        user_id=cmd.user_id,
+        chat_id=cmd.chat_id,
+        old_universe=old_universe,
+        new_universe=actual_universe,
+        success=True,
+    )
+    
+    logging.info(
+        "Telegram /symbols add: symbol added | chat_id=%s | symbol=%s | "
+        "old_count=%d | new_count=%d",
+        cmd.chat_id,
+        normalized_symbol,
+        len(old_universe),
+        len(actual_universe),
+    )
+    
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=True,
+        action="SYMBOLS_ADD",
+    )
+
+
+def handle_symbols_remove_command(
+    cmd: TelegramCommand,
+    symbol: str,
+) -> CommandResult:
+    """Handle the /symbols remove <SYMBOL> subcommand to remove a symbol.
+    
+    This function implements admin-only permission control. Removing a symbol
+    does NOT trigger forced position closure - existing positions will still
+    be managed by SL/TP logic.
+    
+    Args:
+        cmd: The TelegramCommand object for /symbols remove.
+        symbol: The symbol to remove (raw input, will be normalized).
+        
+    Returns:
+        CommandResult with success status and result message.
+        
+    References:
+        - Story 9.2 AC4: /symbols remove 不触发强制平仓
+    """
+    from config.universe import get_effective_symbol_universe, set_symbol_universe
+    
+    logging.info(
+        "Telegram /symbols remove command received: chat_id=%s, message_id=%d, "
+        "user_id=%s, symbol=%s",
+        cmd.chat_id,
+        cmd.message_id,
+        cmd.user_id,
+        symbol,
+    )
+    
+    # ─────────────────────────────────────────────────────────────────
+    # Permission Check: Only admin can execute /symbols remove
+    # ─────────────────────────────────────────────────────────────────
+    is_admin, admin_user_id = _check_symbols_admin_permission(cmd)
+    
+    if not is_admin:
+        logging.warning(
+            "Telegram /symbols remove: permission denied | user_id=%s | "
+            "admin_user_id=%s | chat_id=%s | symbol=%s",
+            cmd.user_id,
+            admin_user_id if admin_user_id else "(not configured)",
+            cmd.chat_id,
+            symbol,
+        )
+        
+        if not admin_user_id:
+            message = (
+                "🔒 *无权限修改 Universe*\n\n"
+                "管理员 User ID 未配置，所有修改请求已被拒绝。\n\n"
+                "💡 请在 `.env` 中设置 `TELEGRAM_ADMIN_USER_ID` 后重启 Bot。\n"
+                "📖 您仍可使用 `/symbols list` 查看当前 Universe。"
+            )
+        else:
+            message = (
+                "🔒 *无权限修改 Universe*\n\n"
+                "您没有权限执行此操作，只能查看 Universe。\n\n"
+                "📖 您可以使用 `/symbols list` 查看当前 Universe。"
+            )
+        
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_REMOVE_PERMISSION_DENIED",
+        )
+    
+    # Normalize symbol
+    normalized_symbol = _normalize_symbol(symbol)
+    
+    if not normalized_symbol:
+        message = (
+            "❌ *缺少参数*\n\n"
+            "用法: `/symbols remove SYMBOL`\n\n"
+            "💡 示例: `/symbols remove BTCUSDT`"
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_REMOVE_MISSING_SYMBOL",
+        )
+    
+    # Get current Universe
+    old_universe = get_effective_symbol_universe()
+    
+    # Check if symbol is in Universe
+    if normalized_symbol not in old_universe:
+        message = (
+            f"ℹ️ *Symbol 不在 Universe 中*\n\n"
+            f"`{_escape_markdown(normalized_symbol)}` 不在当前 Universe 中，无需移除。\n\n"
+            f"*当前 Universe:* {len(old_universe)} 个交易对"
+        )
+        logging.info(
+            "Telegram /symbols remove: symbol '%s' not in universe | chat_id=%s",
+            normalized_symbol,
+            cmd.chat_id,
+        )
+        return CommandResult(
+            success=True,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_REMOVE_NOT_FOUND",
+        )
+    
+    # Remove symbol from Universe
+    new_universe = [s for s in old_universe if s != normalized_symbol]
+    set_symbol_universe(new_universe)
+    
+    # Verify the change
+    actual_universe = get_effective_symbol_universe()
+    
+    # Build response message with important notice about positions
+    message = (
+        f"✅ *Symbol 已移除*\n\n"
+        f"*移除:* `{_escape_markdown(normalized_symbol)}`\n"
+        f"*原 Universe:* {len(old_universe)} 个交易对\n"
+        f"*新 Universe:* {len(actual_universe)} 个交易对\n\n"
+        "⚠️ *重要说明:*\n"
+        "• 后续不会为该 Symbol 生成新开仓信号\n"
+        "• 现有持仓\\(如有\\)仍由 SL/TP 逻辑管理\n"
+        "• 不会触发强制平仓"
+    )
+    
+    # Audit log
+    _log_symbols_audit(
+        action="REMOVE",
+        symbol=normalized_symbol,
+        user_id=cmd.user_id,
+        chat_id=cmd.chat_id,
+        old_universe=old_universe,
+        new_universe=actual_universe,
+        success=True,
+    )
+    
+    logging.info(
+        "Telegram /symbols remove: symbol removed | chat_id=%s | symbol=%s | "
+        "old_count=%d | new_count=%d",
+        cmd.chat_id,
+        normalized_symbol,
+        len(old_universe),
+        len(actual_universe),
+    )
+    
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=True,
+        action="SYMBOLS_REMOVE",
+    )
+
+
+def handle_symbols_command(cmd: TelegramCommand) -> CommandResult:
+    """Handle the /symbols command with subcommands list/add/remove.
+    
+    This is the main entry point for /symbols command processing.
+    It dispatches to the appropriate subcommand handler based on arguments.
+    
+    Args:
+        cmd: The TelegramCommand object for /symbols.
+        
+    Returns:
+        CommandResult with success status and response message.
+        
+    References:
+        - Story 9.2: Telegram /symbols 命令接口
+    """
+    logging.info(
+        "Telegram /symbols command received: chat_id=%s, message_id=%d, args=%s",
+        cmd.chat_id,
+        cmd.message_id,
+        cmd.args,
+    )
+    
+    # Parse subcommand
+    if not cmd.args:
+        # No subcommand - show usage help
+        message = (
+            "📋 */symbols 命令用法*\n\n"
+            "• `/symbols list` \\- 查看当前交易 Universe\n"
+            "• `/symbols add SYMBOL` \\- 添加交易对 \\(管理员\\)\n"
+            "• `/symbols remove SYMBOL` \\- 移除交易对 \\(管理员\\)\n\n"
+            "💡 示例:\n"
+            "`/symbols list`\n"
+            "`/symbols add BTCUSDT`\n"
+            "`/symbols remove SOLUSDT`"
+        )
+        return CommandResult(
+            success=True,
+            message=message,
+            state_changed=False,
+            action="SYMBOLS_HELP",
+        )
+    
+    subcommand = cmd.args[0].lower()
+    
+    if subcommand == "list":
+        return handle_symbols_list_command(cmd)
+    
+    if subcommand == "add":
+        if len(cmd.args) < 2:
+            message = (
+                "❌ *缺少参数*\n\n"
+                "用法: `/symbols add SYMBOL`\n\n"
+                "💡 示例: `/symbols add BTCUSDT`"
+            )
+            return CommandResult(
+                success=False,
+                message=message,
+                state_changed=False,
+                action="SYMBOLS_ADD_MISSING_SYMBOL",
+            )
+        symbol = cmd.args[1]
+        return handle_symbols_add_command(cmd, symbol)
+    
+    if subcommand == "remove":
+        if len(cmd.args) < 2:
+            message = (
+                "❌ *缺少参数*\n\n"
+                "用法: `/symbols remove SYMBOL`\n\n"
+                "💡 示例: `/symbols remove BTCUSDT`"
+            )
+            return CommandResult(
+                success=False,
+                message=message,
+                state_changed=False,
+                action="SYMBOLS_REMOVE_MISSING_SYMBOL",
+            )
+        symbol = cmd.args[1]
+        return handle_symbols_remove_command(cmd, symbol)
+    
+    # Unknown subcommand
+    message = (
+        f"❌ *未知子命令:* `{_escape_markdown(subcommand)}`\n\n"
+        "可用子命令:\n"
+        "• `list` \\- 查看当前交易 Universe\n"
+        "• `add SYMBOL` \\- 添加交易对\n"
+        "• `remove SYMBOL` \\- 移除交易对"
+    )
+    logging.warning(
+        "Telegram /symbols: unknown subcommand '%s' | chat_id=%s",
+        subcommand,
+        cmd.chat_id,
+    )
+    return CommandResult(
+        success=False,
+        message=message,
+        state_changed=False,
+        action="SYMBOLS_UNKNOWN_SUBCOMMAND",
+    )
+
+
 def create_kill_resume_handlers(
     state: "RiskControlState",
     *,
@@ -2120,6 +2700,29 @@ def create_kill_resume_handlers(
             _record_event(result.action, detail)
 
     handlers["config"] = config_handler
+
+    def symbols_handler(cmd: TelegramCommand) -> None:
+        """Handler for /symbols command."""
+        try:
+            result = handle_symbols_command(cmd)
+        except Exception as exc:
+            logging.error("Error processing Telegram /symbols command: %s", exc)
+            fallback = "⚠️ *Symbol 命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"symbols via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Universe updated via Telegram /symbols | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["symbols"] = symbols_handler
 
     def help_handler(cmd: TelegramCommand) -> None:
         """Handler for /help command."""

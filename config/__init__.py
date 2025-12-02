@@ -102,6 +102,12 @@ from config.settings import (
     MAX_RECENT_MESSAGES,
     STATE_COLUMNS,
 )
+from config.universe import (
+    get_effective_symbol_universe,
+    get_effective_coin_universe,
+    set_symbol_universe,
+    clear_symbol_universe_override,
+)
 
 __all__ = [
     "BASE_DIR",
@@ -186,6 +192,10 @@ __all__ = [
     "VALID_INTERVALS",
     "LLM_TEMPERATURE_MIN",
     "LLM_TEMPERATURE_MAX",
+    "get_effective_symbol_universe",
+    "get_effective_coin_universe",
+    "set_symbol_universe",
+    "clear_symbol_universe_override",
     # Effective config getters
     "get_effective_trading_backend",
     "get_effective_market_data_backend",
