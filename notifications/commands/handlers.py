@@ -34,6 +34,8 @@ def create_kill_resume_handlers(
     daily_loss_limit_pct: float = 5.0,
     account_snapshot_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
     execute_close_fn: Optional[Callable[[str, str, float], Any]] = None,
+    update_tpsl_fn: Optional[Callable[[str, Optional[float], Optional[float]], Any]] = None,
+    get_current_price_fn: Optional[Callable[[str], Optional[float]]] = None,
 ) -> Dict[str, Callable[[TelegramCommand], None]]:
     """Create command handlers for Telegram commands.
     
@@ -68,6 +70,12 @@ def create_kill_resume_handlers(
         execute_close_fn: Optional function to execute position close.
             Signature: execute_close_fn(coin, side, quantity) -> CloseResult or None.
             Used by /close command to execute partial or full position closes.
+        update_tpsl_fn: Optional function to update TP/SL for a position.
+            Signature: update_tpsl_fn(coin, new_sl, new_tp) -> TPSLUpdateResult.
+            Used by /sl, /tp, /tpsl commands to update stop loss and take profit.
+        get_current_price_fn: Optional function to get current price for a coin.
+            Signature: get_current_price_fn(coin) -> float or None.
+            Used by /sl, /tp, /tpsl commands for percentage-based calculations.
     
     Returns:
         Dict mapping command names to handler functions.
@@ -85,6 +93,14 @@ def create_kill_resume_handlers(
     from notifications.commands.symbols import handle_symbols_command
     from notifications.commands.audit import handle_audit_command
     from notifications.commands.close import handle_close_command, get_positions_for_close
+    from notifications.commands.close_all import handle_close_all_command
+    from notifications.commands.tpsl import (
+        handle_sl_command,
+        handle_tp_command,
+        handle_tpsl_command,
+        get_positions_for_tpsl,
+        TPSLUpdateResult,
+    )
     
     def _send_response(text: str, target_chat_id: str) -> None:
         """Send response message to Telegram."""
@@ -429,6 +445,139 @@ def create_kill_resume_handlers(
             _record_event(result.action, detail)
 
     handlers["close"] = close_handler
+
+    def close_all_handler(cmd: TelegramCommand) -> None:
+        """Handler for /close_all command (batch position close)."""
+        try:
+            # Get current positions from live exchange or local portfolio
+            current_positions = get_positions_for_close(
+                account_snapshot_fn=account_snapshot_fn,
+                positions_snapshot_fn=positions_snapshot_fn,
+            )
+            result = handle_close_all_command(
+                cmd,
+                positions=current_positions,
+                execute_close_fn=execute_close_fn,
+                kill_switch_active=state.kill_switch_active,
+                daily_loss_triggered=state.daily_loss_triggered,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /close_all command: %s", exc)
+            fallback = "⚠️ *全平命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"close_all via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Batch position close via Telegram /close_all | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["close_all"] = close_all_handler
+
+    def sl_handler(cmd: TelegramCommand) -> None:
+        """Handler for /sl command (set stop loss)."""
+        try:
+            # Get current positions from live exchange or local portfolio
+            current_positions = get_positions_for_tpsl(
+                account_snapshot_fn=account_snapshot_fn,
+                positions_snapshot_fn=positions_snapshot_fn,
+            )
+            result = handle_sl_command(
+                cmd,
+                positions=current_positions,
+                get_current_price_fn=get_current_price_fn,
+                update_tpsl_fn=update_tpsl_fn,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /sl command: %s", exc)
+            fallback = "⚠️ *止损命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"sl via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Stop loss updated via Telegram /sl | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["sl"] = sl_handler
+
+    def tp_handler(cmd: TelegramCommand) -> None:
+        """Handler for /tp command (set take profit)."""
+        try:
+            # Get current positions from live exchange or local portfolio
+            current_positions = get_positions_for_tpsl(
+                account_snapshot_fn=account_snapshot_fn,
+                positions_snapshot_fn=positions_snapshot_fn,
+            )
+            result = handle_tp_command(
+                cmd,
+                positions=current_positions,
+                get_current_price_fn=get_current_price_fn,
+                update_tpsl_fn=update_tpsl_fn,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /tp command: %s", exc)
+            fallback = "⚠️ *止盈命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"tp via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Take profit updated via Telegram /tp | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["tp"] = tp_handler
+
+    def tpsl_handler(cmd: TelegramCommand) -> None:
+        """Handler for /tpsl command (set both stop loss and take profit)."""
+        try:
+            # Get current positions from live exchange or local portfolio
+            current_positions = get_positions_for_tpsl(
+                account_snapshot_fn=account_snapshot_fn,
+                positions_snapshot_fn=positions_snapshot_fn,
+            )
+            result = handle_tpsl_command(
+                cmd,
+                positions=current_positions,
+                get_current_price_fn=get_current_price_fn,
+                update_tpsl_fn=update_tpsl_fn,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /tpsl command: %s", exc)
+            fallback = "⚠️ *TP/SL 命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"tpsl via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"TP/SL updated via Telegram /tpsl | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["tpsl"] = tpsl_handler
 
     def help_handler(cmd: TelegramCommand) -> None:
         """Handler for /help command."""

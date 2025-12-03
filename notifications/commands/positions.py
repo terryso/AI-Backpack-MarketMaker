@@ -6,7 +6,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
-from notifications.commands.base import TelegramCommand, CommandResult, trim_decimal
+from notifications.commands.base import (
+    TelegramCommand,
+    CommandResult,
+    escape_markdown,
+    trim_decimal,
+)
 
 
 def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -205,7 +210,7 @@ def handle_positions_command(
         )
         return CommandResult(
             success=True,
-            message=message,
+            message=escape_markdown(message),
             state_changed=False,
             action="POSITIONS_SNAPSHOT",
         )
@@ -293,7 +298,7 @@ def handle_positions_command(
 
     return CommandResult(
         success=True,
-        message=message,
+        message=escape_markdown(message),
         state_changed=False,
         action="POSITIONS_SNAPSHOT",
     )

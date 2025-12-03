@@ -452,6 +452,8 @@ def poll_telegram_commands() -> None:
                 daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
                 account_snapshot_fn=get_live_account_snapshot,
                 execute_close_fn=execute_telegram_close,
+                update_tpsl_fn=update_telegram_tpsl,
+                get_current_price_fn=get_current_price_for_coin,
             )
             # Process commands with handlers
             process_telegram_commands(commands, command_handlers=command_handlers)
@@ -526,6 +528,8 @@ def _telegram_command_loop() -> None:
                     daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
                     account_snapshot_fn=get_live_account_snapshot,
                     execute_close_fn=execute_telegram_close,
+                    update_tpsl_fn=update_telegram_tpsl,
+                    get_current_price_fn=get_current_price_for_coin,
                 )
                 # Process commands with handlers
                 process_telegram_commands(commands, command_handlers=command_handlers)
@@ -822,6 +826,98 @@ def execute_telegram_close(coin: str, side: str, quantity: float) -> Optional[Cl
         _update_local_state_after_close(coin, quantity, current_price)
     
     return close_result
+
+
+def update_telegram_tpsl(
+    coin: str,
+    new_sl: Optional[float],
+    new_tp: Optional[float],
+) -> "TPSLUpdateResult":
+    """Update stop loss and/or take profit for a position via Telegram command.
+    
+    This function updates the local positions state with new SL/TP values.
+    It is designed for the Telegram /sl, /tp, /tpsl commands.
+    
+    Args:
+        coin: Coin symbol (e.g., "BTC", "ETH").
+        new_sl: New stop loss price, or None to keep existing.
+        new_tp: New take profit price, or None to keep existing.
+        
+    Returns:
+        TPSLUpdateResult with success status and old/new values.
+    """
+    from notifications.commands.tpsl import TPSLUpdateResult
+    
+    if coin not in positions:
+        return TPSLUpdateResult(
+            success=False,
+            error=f"无 {coin} 持仓",
+        )
+    
+    pos = positions[coin]
+    old_sl = float(pos.get("stop_loss", 0) or 0)
+    old_tp = float(pos.get("profit_target", 0) or 0)
+    
+    # Update SL if provided
+    if new_sl is not None:
+        positions[coin]["stop_loss"] = new_sl
+        _core_state.positions[coin]["stop_loss"] = new_sl
+    
+    # Update TP if provided
+    if new_tp is not None:
+        positions[coin]["profit_target"] = new_tp
+        _core_state.positions[coin]["profit_target"] = new_tp
+    
+    # Persist state
+    save_state()
+    
+    logging.info(
+        "Telegram TP/SL update: coin=%s | old_sl=%.4f | new_sl=%s | "
+        "old_tp=%.4f | new_tp=%s",
+        coin,
+        old_sl,
+        new_sl if new_sl is not None else "unchanged",
+        old_tp,
+        new_tp if new_tp is not None else "unchanged",
+    )
+    
+    return TPSLUpdateResult(
+        success=True,
+        old_sl=old_sl if old_sl > 0 else None,
+        new_sl=new_sl,
+        old_tp=old_tp if old_tp > 0 else None,
+        new_tp=new_tp,
+    )
+
+
+def get_current_price_for_coin(coin: str) -> Optional[float]:
+    """Get current market price for a coin.
+    
+    This function is used by Telegram /sl, /tp, /tpsl commands to get
+    the current price for percentage-based calculations.
+    
+    Args:
+        coin: Coin symbol (e.g., "BTC", "ETH").
+        
+    Returns:
+        Current price if available, None otherwise.
+    """
+    symbol = resolve_symbol_for_coin(coin)
+    if not symbol:
+        logging.debug("get_current_price_for_coin: no symbol mapping for %s", coin)
+        return None
+    
+    data = fetch_market_data(symbol)
+    if not data:
+        logging.debug("get_current_price_for_coin: no market data for %s", symbol)
+        return None
+    
+    price = data.get("price")
+    if price is None or price <= 0:
+        logging.debug("get_current_price_for_coin: invalid price for %s: %s", symbol, price)
+        return None
+    
+    return float(price)
 
 
 def _update_local_state_after_close(coin: str, closed_quantity: float, current_price: float) -> None:
