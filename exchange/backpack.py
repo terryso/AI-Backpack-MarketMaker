@@ -403,6 +403,7 @@ class BackpackFuturesExchangeClient:
             "total_margin": net_equity_locked,
             "positions_count": positions_count,
             "unrealized_pnl": unrealized_pnl,
+            "positions": positions or [],
         }
 
     def _get_collateral(self) -> Optional[Dict[str, Any]]:

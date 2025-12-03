@@ -32,6 +32,7 @@ from notifications.telegram_commands import (
     handle_kill_command,
     handle_resume_command,
     handle_status_command,
+    handle_positions_command,
     handle_help_command,
     handle_unknown_command,
     create_kill_resume_handlers,
@@ -1324,6 +1325,88 @@ class TestHandleBalanceCommand:
         assert "🔴 已暂停" in msg
 
 
+class TestHandlePositionsCommand:
+    """Tests for handle_positions_command function (open positions details)."""
+
+    @pytest.fixture
+    def base_command(self) -> TelegramCommand:
+        """Create a sample /positions command."""
+        return TelegramCommand(
+            command="positions",
+            args=[],
+            chat_id="123456",
+            message_id=150,
+            raw_text="/positions",
+        )
+
+    def test_positions_no_positions_returns_empty_message(
+        self,
+        base_command: TelegramCommand,
+    ) -> None:
+        """/positions should return friendly message when there are no positions."""
+        result = handle_positions_command(base_command, positions={})
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert result.state_changed is False
+        assert result.action == "POSITIONS_SNAPSHOT"
+
+        msg = result.message
+        assert "当前持仓列表" in msg
+        assert "当前没有任何持仓" in msg
+        assert "/status" in msg or "/balance" in msg
+
+    def test_positions_shows_position_details(
+        self,
+        base_command: TelegramCommand,
+    ) -> None:
+        """/positions should show key fields for each open position."""
+        positions = {
+            "BTC": {
+                "side": "long",
+                "quantity": 0.5,
+                "entry_price": 50000.0,
+                "profit_target": 55000.0,
+                "stop_loss": 48000.0,
+                "leverage": 5,
+                "margin": 1000.0,
+                "risk_usd": 200.0,
+            },
+            "ETH": {
+                "side": "short",
+                "quantity": 1.2,
+                "entry_price": 3000.0,
+                "profit_target": 2500.0,
+                "stop_loss": 3200.0,
+                "leverage": 3,
+                "margin": 800.0,
+                "risk_usd": 150.0,
+            },
+        }
+
+        result = handle_positions_command(base_command, positions=positions)
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert result.state_changed is False
+        assert result.action == "POSITIONS_SNAPSHOT"
+
+        msg = result.message
+        # 标题与数量
+        assert "当前持仓列表" in msg
+        assert "持仓数量" in msg
+        # 关键字段
+        assert "BTC" in msg
+        assert "ETH" in msg
+        assert "LONG" in msg or "long" in msg
+        assert "SHORT" in msg or "short" in msg
+        assert "TP" in msg
+        assert "SL" in msg
+        assert "杠杆" in msg
+        assert "保证金" in msg
+        assert "风险" in msg
+
+
 class TestHandleRiskCommand:
     """Tests for handle_risk_command function (risk control status)."""
 
@@ -1608,6 +1691,75 @@ class TestStatusHandlerIntegration:
         assert "🛡 *风控状态*" in sent["text"]
         # 记录了审计事件
         assert ("RISK_CONTROL_STATUS", "risk via Telegram | chat_id=123456") in events
+
+
+class TestPositionsHandlerIntegration:
+    """Integration tests for /positions handler via create_kill_resume_handlers."""
+
+    def test_positions_handler_sends_message_and_records_event(self):
+        """/positions 通过工厂集成，发送消息并记录审计事件。"""
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-2.0,
+            daily_loss_triggered=False,
+        )
+
+        positions_snapshot: Dict[str, Dict[str, Any]] = {
+            "BTC": {
+                "side": "long",
+                "quantity": 0.25,
+                "entry_price": 50000.0,
+                "profit_target": 52000.0,
+                "stop_loss": 49000.0,
+                "leverage": 4,
+                "margin": 500.0,
+                "risk_usd": 100.0,
+            }
+        }
+
+        sent: Dict[str, Any] = {}
+        events: list[tuple[str, str]] = []
+
+        def fake_send(text: str, parse_mode: str) -> None:
+            sent["text"] = text
+            sent["parse_mode"] = parse_mode
+
+        def fake_record(action: str, detail: str) -> None:
+            events.append((action, detail))
+
+        handlers = create_kill_resume_handlers(
+            state,
+            positions_count_fn=lambda: len(positions_snapshot),
+            positions_snapshot_fn=lambda: positions_snapshot,
+            send_fn=fake_send,
+            record_event_fn=fake_record,
+            bot_token="dummy",
+            chat_id="123456",
+            total_equity_fn=lambda: 9500.0,
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        cmd = TelegramCommand(
+            command="positions",
+            args=[],
+            chat_id="123456",
+            message_id=210,
+            raw_text="/positions",
+        )
+
+        handlers["positions"](cmd)
+
+        # 发送了 MarkdownV2 文本
+        assert sent["parse_mode"] == "MarkdownV2"
+        assert "当前持仓列表" in sent["text"]
+        assert "BTC" in sent["text"]
+
+        # 记录了审计事件
+        assert ("POSITIONS_SNAPSHOT", "positions via Telegram | chat_id=123456") in events
 
 
 # ═══════════════════════════════════════════════════════════════════

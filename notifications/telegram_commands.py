@@ -383,6 +383,7 @@ def process_telegram_commands(
 COMMAND_REGISTRY: list[tuple[str, str]] = [
     ("/status", "查看 Bot 资金与盈利状态"),
     ("/balance", "查看当前账户余额与持仓概要"),
+    ("/positions", "查看当前所有持仓详情"),
     ("/risk", "查看风控配置与状态"),
     ("/kill", "激活 Kill\\-Switch，暂停所有新开仓"),
     ("/resume", "解除 Kill\\-Switch 并恢复新开仓"),
@@ -880,6 +881,131 @@ def handle_balance_command(
         message=message,
         state_changed=False,
         action="ACCOUNT_BALANCE",
+    )
+
+
+def _trim_decimal(value: float, *, max_decimals: int = 4) -> str:
+    s = f"{value:.{max_decimals}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def handle_positions_command(
+    cmd: TelegramCommand,
+    *,
+    positions: Dict[str, Dict[str, Any]],
+) -> CommandResult:
+    """Handle the /positions command to show detailed open positions.
+    
+    This command lists all open positions with key fields such as side,
+    quantity, entry price, TP/SL and margin usage.
+    """
+    logging.info(
+        "Telegram /positions command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    if not positions:
+        message = (
+            "📂 当前持仓列表\n\n"
+            "当前没有任何持仓。\n\n"
+            "提示: 可使用 /status 或 /balance 查看账户概况。"
+        )
+        return CommandResult(
+            success=True,
+            message=message,
+            state_changed=False,
+            action="POSITIONS_SNAPSHOT",
+        )
+
+    lines: list[str] = []
+    lines.append("📂 当前持仓列表\n")
+    lines.append(f"持仓数量: {len(positions)}\n")
+
+    for coin in sorted(positions.keys()):
+        pos = positions.get(coin) or {}
+
+        side_raw = str(pos.get("side", "")).upper() or "UNKNOWN"
+        try:
+            quantity = float(pos.get("quantity", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        try:
+            entry_price = float(pos.get("entry_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            entry_price = 0.0
+        try:
+            tp = float(pos.get("profit_target", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            tp = 0.0
+        try:
+            sl = float(pos.get("stop_loss", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            sl = 0.0
+        leverage = pos.get("leverage", 1.0)
+        try:
+            margin = float(pos.get("margin", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            margin = 0.0
+        try:
+            risk_usd = float(pos.get("risk_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            risk_usd = 0.0
+        try:
+            pnl = float(pos.get("pnl", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        try:
+            liq_price = float(pos.get("liquidation_price", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            liq_price = 0.0
+
+        coin_display = str(coin)
+        side_display = side_raw
+
+        qty_str = _trim_decimal(quantity, max_decimals=4)
+        entry_str = _trim_decimal(entry_price, max_decimals=4)
+        tp_str = _trim_decimal(tp, max_decimals=4)
+        sl_str = _trim_decimal(sl, max_decimals=4)
+        try:
+            leverage_float = float(leverage)
+        except (TypeError, ValueError):
+            leverage_float = 0.0
+        leverage_str = _trim_decimal(leverage_float, max_decimals=2)
+
+        lines.append(
+            f"• {coin_display} {side_display} x{qty_str} @ ${entry_str}"
+        )
+        if tp > 0.0 or sl > 0.0:
+            lines.append(
+                f"  TP ${tp_str} / SL ${sl_str} / 杠杆 {leverage_str}"
+            )
+        else:
+            lines.append(
+                f"  杠杆 {leverage_str}"
+            )
+
+        if margin > 0.0 or risk_usd > 0.0:
+            lines.append(
+                f"  保证金 ${margin:,.2f} / 风险 ${risk_usd:,.2f}"
+            )
+
+        if pnl != 0.0 or liq_price > 0.0:
+            liq_str = _trim_decimal(liq_price, max_decimals=4) if liq_price > 0.0 else ""
+            liq_part = f" / 强平价 ${liq_str}" if liq_price > 0.0 else ""
+            lines.append(
+                f"  当前盈亏 {pnl:+,.2f}{liq_part}"
+            )
+
+    message = "\n".join(lines)
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="POSITIONS_SNAPSHOT",
     )
 
 
@@ -2500,6 +2626,7 @@ def create_kill_resume_handlers(
     state: "RiskControlState",
     *,
     positions_count_fn: Optional[Callable[[], int]] = None,
+    positions_snapshot_fn: Optional[Callable[[], Dict[str, Dict[str, Any]]]] = None,
     send_fn: Optional[Callable[[str, str], None]] = None,
     record_event_fn: Optional[Callable[[str, str], None]] = None,
     bot_token: str = "",
@@ -2737,6 +2864,249 @@ def create_kill_resume_handlers(
         if result.action:
             detail = f"risk via Telegram | chat_id={cmd.chat_id}"
             _record_event(result.action, detail)
+
+    def positions_handler(cmd: TelegramCommand) -> None:
+        """Handler for /positions command (open positions snapshot)."""
+        try:
+            current_positions: Dict[str, Dict[str, Any]] = {}
+
+            # 1) 优先尝试从实盘账户 snapshot 中提取持仓（例如 Backpack Futures）
+            snapshot: Optional[Dict[str, Any]] = None
+            if account_snapshot_fn is not None:
+                try:
+                    snapshot = account_snapshot_fn()
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning(
+                        "Failed to get live account snapshot for /positions: %s",
+                        exc,
+                    )
+                    snapshot = None
+
+            if isinstance(snapshot, dict):
+                raw_positions = snapshot.get("positions")
+                if isinstance(raw_positions, list):
+                    live_positions: Dict[str, Dict[str, Any]] = {}
+                    for pos in raw_positions:
+                        if not isinstance(pos, dict):
+                            continue
+
+                        symbol = str(pos.get("symbol", "") or "").strip()
+                        if not symbol:
+                            continue
+
+                        # 兼容 Backpack 符号（如 BTC_USDC_PERP），提取前缀作为 coin
+                        upper_symbol = symbol.upper()
+                        if "_" in upper_symbol:
+                            coin = upper_symbol.split("_", 1)[0]
+                        else:
+                            coin = upper_symbol
+
+                        # 尝试从多种字段推导净持仓数量（与 Backpack _get_open_positions 保持一致）
+                        net_qty = 0.0
+                        for qty_field in (
+                            "netQuantity",
+                            "netExposureQuantity",
+                            "quantity",
+                            "size",
+                        ):
+                            raw_val = pos.get(qty_field)
+                            if raw_val is None:
+                                continue
+                            try:
+                                net_qty = float(raw_val)
+                            except (TypeError, ValueError):
+                                continue
+                            if net_qty != 0.0:
+                                break
+
+                        if net_qty == 0.0:
+                            continue
+
+                        side = "long" if net_qty > 0 else "short"
+                        quantity = abs(net_qty)
+
+                        # 入场价 / TP / SL（若不存在则回退为 0.0）
+                        try:
+                            entry_price = float(pos.get("entryPrice", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            entry_price = 0.0
+                        try:
+                            tp = float(pos.get("takeProfitPrice", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            tp = 0.0
+                        try:
+                            sl = float(pos.get("stopLossPrice", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            sl = 0.0
+
+                        # notional：优先使用 netExposureNotional，fallback 到 entry_price * quantity（取绝对值）
+                        notional = 0.0
+                        raw_notional = pos.get("netExposureNotional")
+                        if raw_notional is not None:
+                            try:
+                                notional = abs(float(raw_notional))
+                            except (TypeError, ValueError):
+                                notional = 0.0
+                        if (notional == 0.0 or notional != notional) and entry_price > 0.0 and quantity > 0.0:
+                            try:
+                                notional = abs(quantity * entry_price)
+                            except Exception:  # noqa: BLE001
+                                notional = 0.0
+
+                        # imf: 初始保证金系数（来自官方 Get open positions 响应）
+                        try:
+                            imf = float(pos.get("imf", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            imf = 0.0
+
+                        # 保证金：优先使用 initialMargin，其次 marginUsed，再其次 margin，最后才用 notional * imf 兜底
+                        margin = 0.0
+                        for margin_field in ("initialMargin", "marginUsed", "margin"):
+                            raw_margin = pos.get(margin_field)
+                            if raw_margin is None:
+                                continue
+                            try:
+                                margin = float(raw_margin)
+                            except (TypeError, ValueError):
+                                continue
+                            if margin > 0.0 and margin == margin:
+                                break
+                        if (margin <= 0.0 or margin != margin) and notional > 0.0 and imf > 0.0:
+                            margin = abs(notional) * imf
+
+                        # 杠杆：优先使用 notional/margin，其次原始 leverage 字段，最后才用 1/imf
+                        leverage = 0.0
+                        if margin > 0.0 and margin == margin and notional > 0.0:
+                            try:
+                                leverage = notional / margin
+                            except Exception:  # noqa: BLE001
+                                leverage = 0.0
+                        if leverage <= 0.0 or leverage != leverage:
+                            leverage_val = pos.get("leverage")
+                            try:
+                                leverage = float(leverage_val) if leverage_val is not None else 0.0
+                            except (TypeError, ValueError):
+                                leverage = 0.0
+                        if (leverage <= 0.0 or leverage != leverage) and imf > 0.0:
+                            leverage = 1.0 / imf
+                        if leverage <= 0.0 or leverage != leverage:
+                            leverage = 1.0
+
+                        # 盈亏：优先使用总盈亏（netExposureNotional - netCost 或 pnlRealized + pnlUnrealized），
+                        # 若缺失再回退到 pnlUnrealized 或 markPrice/entryPrice/方向
+                        pnl = 0.0
+                        pnl_computed = False
+
+                        # 1) 首选 netExposureNotional - netCost
+                        exposure_notional_val = pos.get("netExposureNotional")
+                        net_cost_val = pos.get("netCost")
+                        if exposure_notional_val is not None and net_cost_val is not None:
+                            try:
+                                exposure_notional = float(exposure_notional_val)
+                                net_cost = float(net_cost_val)
+                                pnl = exposure_notional - net_cost
+                                pnl_computed = True
+                            except (TypeError, ValueError):
+                                pnl_computed = False
+
+                        # 2) 其次尝试 pnlRealized + pnlUnrealized
+                        if not pnl_computed:
+                            realized_val = pos.get("pnlRealized")
+                            unrealized_val = pos.get("pnlUnrealized")
+                            have_any = False
+                            realized = 0.0
+                            unrealized = 0.0
+                            if realized_val is not None:
+                                try:
+                                    realized = float(realized_val)
+                                    have_any = True
+                                except (TypeError, ValueError):
+                                    pass
+                            if unrealized_val is not None:
+                                try:
+                                    unrealized = float(unrealized_val)
+                                    have_any = True
+                                except (TypeError, ValueError):
+                                    pass
+                            if have_any:
+                                pnl = realized + unrealized
+                                pnl_computed = True
+
+                        # 3) 再次退回到单独的 pnlUnrealized
+                        if not pnl_computed:
+                            pnl_val = pos.get("pnlUnrealized")
+                            if pnl_val is not None:
+                                try:
+                                    pnl = float(pnl_val)
+                                    pnl_computed = True
+                                except (TypeError, ValueError):
+                                    pnl = 0.0
+
+                        # 4) 最后兜底，用 markPrice/entryPrice/方向 估算
+                        if not pnl_computed:
+                            try:
+                                mark_price = float(pos.get("markPrice", 0.0) or 0.0)
+                            except (TypeError, ValueError):
+                                mark_price = 0.0
+
+                            if entry_price > 0.0 and mark_price > 0.0 and quantity > 0.0:
+                                side_sign = 1.0 if side == "long" else -1.0
+                                try:
+                                    pnl = (mark_price - entry_price) * side_sign * quantity
+                                    pnl_computed = True
+                                except Exception:  # noqa: BLE001
+                                    pnl = 0.0
+
+                        # 强平价：直接使用官方字段 estLiquidationPrice
+                        try:
+                            liq_price = float(pos.get("estLiquidationPrice", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            liq_price = 0.0
+
+                        live_positions[coin] = {
+                            "side": side,
+                            "quantity": quantity,
+                            "entry_price": entry_price,
+                            "profit_target": tp,
+                            "stop_loss": sl,
+                            "leverage": leverage,
+                            "margin": margin,
+                            "risk_usd": 0.0,
+                            "pnl": pnl,
+                            "liquidation_price": liq_price,
+                        }
+
+                    if live_positions:
+                        current_positions = live_positions
+
+            # 2) 若实盘 snapshot 不可用或无有效持仓，则回退到本地 positions 视图
+            if not current_positions and positions_snapshot_fn is not None:
+                try:
+                    local_snapshot = positions_snapshot_fn()
+                except Exception as exc:  # noqa: BLE001
+                    logging.error(
+                        "Error calling positions_snapshot_fn for /positions: %s",
+                        exc,
+                    )
+                    local_snapshot = None
+                if isinstance(local_snapshot, dict):
+                    current_positions = local_snapshot
+
+            result = handle_positions_command(
+                cmd,
+                positions=current_positions,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error processing Telegram /positions command: %s", exc)
+            fallback = "⚠️ *暂时无法获取持仓信息，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"positions via Telegram | chat_id={cmd.chat_id}"
+            _record_event(result.action, detail)
     
     handlers: Dict[str, Callable[[TelegramCommand], None]] = {
         "kill": kill_handler,
@@ -2746,6 +3116,7 @@ def create_kill_resume_handlers(
     handlers["status"] = status_handler
     handlers["balance"] = balance_handler
     handlers["risk"] = risk_handler
+    handlers["positions"] = positions_handler
 
     def reset_daily_handler(cmd: TelegramCommand) -> None:
         """Handler for /reset_daily command."""

@@ -433,6 +433,7 @@ def poll_telegram_commands() -> None:
             command_handlers = create_kill_resume_handlers(
                 state=_core_state.risk_control_state,
                 positions_count_fn=lambda: len(positions),
+                positions_snapshot_fn=lambda: positions,
                 record_event_fn=log_risk_control_event,
                 bot_token=TELEGRAM_BOT_TOKEN,
                 chat_id=TELEGRAM_CHAT_ID,
@@ -505,6 +506,7 @@ def _telegram_command_loop() -> None:
                 command_handlers = create_kill_resume_handlers(
                     state=_core_state.risk_control_state,
                     positions_count_fn=lambda: len(positions),
+                    positions_snapshot_fn=lambda: positions,
                     record_event_fn=log_risk_control_event,
                     bot_token=TELEGRAM_BOT_TOKEN,
                     chat_id=TELEGRAM_CHAT_ID,
