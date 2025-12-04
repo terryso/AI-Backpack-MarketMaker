@@ -710,6 +710,34 @@ class TestSLCommandSuccess:
         assert "原止损" in result.message  # Contains old SL info
 
 
+    def test_sl_default_pct_when_only_symbol(self, sample_long_position: Dict):
+        cmd = TelegramCommand(
+            command="sl",
+            args=["BTC"],
+            chat_id="123456789",
+            message_id=1,
+            raw_text="/sl BTC",
+            raw_update={},
+            user_id="111222333",
+        )
+        
+        def mock_get_price(coin: str) -> float:
+            return 50000.0
+
+        result = handle_sl_command(
+            cmd,
+            positions=sample_long_position,
+            get_current_price_fn=mock_get_price,
+            update_tpsl_fn=None,
+        )
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert result.action == "TELEGRAM_SL_UPDATE"
+        # DEFAULT_SL_PCT = 30, entry_price = 50000 -> 35000 target (approx)
+        assert "35" in result.message
+
+
 class TestTPCommandSuccess:
     """Tests for successful /tp command execution (AC6)."""
     
@@ -789,6 +817,34 @@ class TestTPCommandSuccess:
         assert "百分比模式" in result.message
 
 
+    def test_tp_default_pct_when_only_symbol(self, sample_long_position: Dict):
+        cmd = TelegramCommand(
+            command="tp",
+            args=["BTC"],
+            chat_id="123456789",
+            message_id=1,
+            raw_text="/tp BTC",
+            raw_update={},
+            user_id="111222333",
+        )
+        
+        def mock_get_price(coin: str) -> float:
+            return 50000.0
+
+        result = handle_tp_command(
+            cmd,
+            positions=sample_long_position,
+            get_current_price_fn=mock_get_price,
+            update_tpsl_fn=None,
+        )
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert result.action == "TELEGRAM_TP_UPDATE"
+        # DEFAULT_TP_PCT = 20, entry_price = 50000 -> 60000 target (approx)
+        assert "60" in result.message
+
+
 class TestTPSLCommandSuccess:
     """Tests for successful /tpsl command execution (AC6)."""
     
@@ -866,6 +922,35 @@ class TestTPSLCommandSuccess:
         assert result.success is False
         assert result.action == "TPSL_NO_PRICE_FOR_PCT"
         assert "百分比模式" in result.message
+
+
+    def test_tpsl_default_pct_when_only_symbol(self, sample_long_position: Dict):
+        cmd = TelegramCommand(
+            command="tpsl",
+            args=["BTC"],
+            chat_id="123456789",
+            message_id=1,
+            raw_text="/tpsl BTC",
+            raw_update={},
+            user_id="111222333",
+        )
+        
+        def mock_get_price(coin: str) -> float:
+            return 50000.0
+
+        result = handle_tpsl_command(
+            cmd,
+            positions=sample_long_position,
+            get_current_price_fn=mock_get_price,
+            update_tpsl_fn=None,
+        )
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert result.action == "TELEGRAM_TPSL_UPDATE"
+        # Should contain both default SL (around 35k) and TP (around 60k)
+        assert "35" in result.message
+        assert "60" in result.message
 
 
 # ═══════════════════════════════════════════════════════════════════

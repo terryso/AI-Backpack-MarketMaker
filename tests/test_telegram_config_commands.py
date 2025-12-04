@@ -249,6 +249,26 @@ class TestConfigSetCommand:
         assert result.success is False
         assert result.action == "CONFIG_SET_INVALID_VALUE"
 
+    def test_config_set_valid_default_tp_pct(self):
+        cmd = _make_config_command(["set", "DEFAULT_TP_PCT", "25"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            result = handle_config_set_command(cmd, "DEFAULT_TP_PCT", "25")
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert get_runtime_override("DEFAULT_TP_PCT") == 25.0
+
+    def test_config_set_valid_default_sl_pct(self):
+        cmd = _make_config_command(["set", "DEFAULT_SL_PCT", "40"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            result = handle_config_set_command(cmd, "DEFAULT_SL_PCT", "40")
+
+        assert result.success is True
+        assert result.state_changed is True
+        assert get_runtime_override("DEFAULT_SL_PCT") == 40.0
+
     def test_config_set_temperature_out_of_range(self):
         """AC3: /config set TRADEBOT_LLM_TEMPERATURE out of range returns error."""
         cmd = _make_config_command(["set", "TRADEBOT_LLM_TEMPERATURE", "5.0"], user_id="admin123")

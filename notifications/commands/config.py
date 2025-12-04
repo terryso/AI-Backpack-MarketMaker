@@ -21,15 +21,19 @@ CONFIG_KEY_DESCRIPTIONS: dict[str, str] = {
     "TRADEBOT_INTERVAL": "交易循环间隔",
     "TRADEBOT_LLM_TEMPERATURE": "LLM 采样温度",
     "TRADEBOT_LOOP_ENABLED": "主循环总开关 (false=暂停 bot, true=恢复运行)",
+    "DEFAULT_TP_PCT": "默认止盈百分比 (基于入场价)",
+    "DEFAULT_SL_PCT": "默认止损百分比 (基于入场价)",
 }
 
 # Config keys actually exposed via /config list|get|set.
-# 当前版本支持对 interval、LLM temperature 与 TRADEBOT_LOOP_ENABLED 进行运行时调整，
+# 当前版本支持对 interval、LLM temperature、TRADEBOT_LOOP_ENABLED 以及 TP/SL 默认百分比进行运行时调整，
 # backend 两个 key 仍然由 .env + 重启决定。
 CONFIG_KEYS_FOR_TELEGRAM: tuple[str, ...] = (
     "TRADEBOT_INTERVAL",
     "TRADEBOT_LLM_TEMPERATURE",
     "TRADEBOT_LOOP_ENABLED",
+    "DEFAULT_TP_PCT",
+    "DEFAULT_SL_PCT",
 )
 
 
@@ -48,6 +52,8 @@ def _get_config_value_info(key: str) -> tuple[str, str]:
         get_effective_interval,
         get_effective_llm_temperature,
         get_effective_tradebot_loop_enabled,
+        get_effective_default_tp_pct,
+        get_effective_default_sl_pct,
     )
     from config.runtime_overrides import (
         VALID_TRADING_BACKENDS,
@@ -80,6 +86,14 @@ def _get_config_value_info(key: str) -> tuple[str, str]:
     if key == "TRADEBOT_LOOP_ENABLED":
         current = "true" if get_effective_tradebot_loop_enabled() else "false"
         return current, "可选值: true, false (仅影响当前进程的主循环，不修改 .env)"
+    
+    if key == "DEFAULT_TP_PCT":
+        current = str(get_effective_default_tp_pct())
+        return current, "范围: 0.0 - 100.0 (百分比, 基于入场价)"
+    
+    if key == "DEFAULT_SL_PCT":
+        current = str(get_effective_default_sl_pct())
+        return current, "范围: 0.0 - 100.0 (百分比, 基于入场价)"
     
     return "N/A", "未知配置项"
 
@@ -226,6 +240,8 @@ def handle_config_set_command(
         get_effective_interval,
         get_effective_llm_temperature,
         get_effective_tradebot_loop_enabled,
+        get_effective_default_tp_pct,
+        get_effective_default_sl_pct,
     )
     
     logging.info(
@@ -312,6 +328,10 @@ def handle_config_set_command(
         old_value = str(get_effective_llm_temperature())
     elif normalized_key == "TRADEBOT_LOOP_ENABLED":
         old_value = "true" if get_effective_tradebot_loop_enabled() else "false"
+    elif normalized_key == "DEFAULT_TP_PCT":
+        old_value = str(get_effective_default_tp_pct())
+    elif normalized_key == "DEFAULT_SL_PCT":
+        old_value = str(get_effective_default_sl_pct())
     else:
         old_value = "N/A"
     
@@ -349,6 +369,8 @@ def handle_config_set_command(
         normalized_value = float(value)
     elif normalized_key == "TRADEBOT_LOOP_ENABLED":
         normalized_value = value.strip().lower()
+    elif normalized_key in ("DEFAULT_TP_PCT", "DEFAULT_SL_PCT"):
+        normalized_value = float(value)
     else:
         normalized_value = value
     

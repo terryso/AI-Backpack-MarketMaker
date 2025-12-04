@@ -27,6 +27,10 @@ from notifications.commands.base import (
     trim_decimal,
 )
 from notifications.commands.positions import parse_live_positions
+from config.settings import (
+    get_effective_default_tp_pct,
+    get_effective_default_sl_pct,
+)
 
 
 class PriceMode(Enum):
@@ -467,8 +471,20 @@ def handle_sl_command(
         cmd.args,
     )
     
+    # Apply default SL percentage when only symbol is provided
+    args_for_parse = list(cmd.args)
+    if len(args_for_parse) == 1:
+        symbol_arg = args_for_parse[0]
+        default_sl_pct = get_effective_default_sl_pct()
+        args_for_parse = [symbol_arg, f"-{default_sl_pct}%"]
+        logging.info(
+            "Telegram /sl command: using default SL pct %.4f%% for symbol %s",
+            default_sl_pct,
+            symbol_arg,
+        )
+    
     # Parse arguments
-    parsed = _parse_sl_args(cmd.args)
+    parsed = _parse_sl_args(args_for_parse)
     if parsed.error:
         logging.warning(
             "Telegram /sl command parse error: %s | args=%s | chat_id=%s",
@@ -678,8 +694,20 @@ def handle_tp_command(
         cmd.args,
     )
     
+    # Apply default TP percentage when only symbol is provided
+    args_for_parse = list(cmd.args)
+    if len(args_for_parse) == 1:
+        symbol_arg = args_for_parse[0]
+        default_tp_pct = get_effective_default_tp_pct()
+        args_for_parse = [symbol_arg, f"{default_tp_pct}%"]
+        logging.info(
+            "Telegram /tp command: using default TP pct %.4f%% for symbol %s",
+            default_tp_pct,
+            symbol_arg,
+        )
+    
     # Parse arguments
-    parsed = _parse_tp_args(cmd.args)
+    parsed = _parse_tp_args(args_for_parse)
     if parsed.error:
         logging.warning(
             "Telegram /tp command parse error: %s | args=%s | chat_id=%s",
@@ -889,8 +917,26 @@ def handle_tpsl_command(
         cmd.args,
     )
     
+    # Apply default TP/SL percentages when only symbol is provided
+    args_for_parse = list(cmd.args)
+    if len(args_for_parse) == 1:
+        symbol_arg = args_for_parse[0]
+        default_sl_pct = get_effective_default_sl_pct()
+        default_tp_pct = get_effective_default_tp_pct()
+        args_for_parse = [
+            symbol_arg,
+            f"-{default_sl_pct}%",
+            f"{default_tp_pct}%",
+        ]
+        logging.info(
+            "Telegram /tpsl command: using default SL/TP pct %.4f%%/%.4f%% for symbol %s",
+            default_sl_pct,
+            default_tp_pct,
+            symbol_arg,
+        )
+    
     # Parse arguments
-    parsed = _parse_tpsl_args(cmd.args)
+    parsed = _parse_tpsl_args(args_for_parse)
     if parsed.error:
         logging.warning(
             "Telegram /tpsl command parse error: %s | args=%s | chat_id=%s",

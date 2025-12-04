@@ -596,6 +596,22 @@ DAILY_LOSS_LIMIT_PCT = _parse_float_env_with_range(
     var_name="DAILY_LOSS_LIMIT_PCT",
 )
 
+DEFAULT_TP_PCT = _parse_float_env_with_range(
+    os.getenv("DEFAULT_TP_PCT"),
+    default=20.0,
+    min_val=0.0,
+    max_val=100.0,
+    var_name="DEFAULT_TP_PCT",
+)
+
+DEFAULT_SL_PCT = _parse_float_env_with_range(
+    os.getenv("DEFAULT_SL_PCT"),
+    default=30.0,
+    min_val=0.0,
+    max_val=100.0,
+    var_name="DEFAULT_SL_PCT",
+)
+
 # ───────────────────────── EFFECTIVE CONFIG GETTERS ─────────────────────────
 # These functions implement the priority: runtime override > env > default
 # They are the preferred way to access the 4 whitelisted config values at runtime
@@ -776,6 +792,46 @@ def get_effective_tradebot_loop_enabled() -> bool:
     if env_value is not None:
         return _parse_bool_env(env_value, default=True)
     return True
+
+
+def get_effective_default_tp_pct() -> float:
+    from config.runtime_overrides import get_runtime_override
+
+    override = get_runtime_override("DEFAULT_TP_PCT")
+    if override is not None:
+        try:
+            value = float(override)
+        except (TypeError, ValueError):
+            EARLY_ENV_WARNINGS.append(
+                f"Invalid DEFAULT_TP_PCT override '{override}'; ignoring and using env/default."
+            )
+        else:
+            if 0.0 <= value <= 100.0:
+                return value
+            EARLY_ENV_WARNINGS.append(
+                f"DEFAULT_TP_PCT override {value} out of range [0.0, 100.0]; ignoring and using env/default."
+            )
+    return DEFAULT_TP_PCT
+
+
+def get_effective_default_sl_pct() -> float:
+    from config.runtime_overrides import get_runtime_override
+
+    override = get_runtime_override("DEFAULT_SL_PCT")
+    if override is not None:
+        try:
+            value = float(override)
+        except (TypeError, ValueError):
+            EARLY_ENV_WARNINGS.append(
+                f"Invalid DEFAULT_SL_PCT override '{override}'; ignoring and using env/default."
+            )
+        else:
+            if 0.0 <= value <= 100.0:
+                return value
+            EARLY_ENV_WARNINGS.append(
+                f"DEFAULT_SL_PCT override {value} out of range [0.0, 100.0]; ignoring and using env/default."
+            )
+    return DEFAULT_SL_PCT
 
 
 def get_telegram_admin_user_id() -> str:

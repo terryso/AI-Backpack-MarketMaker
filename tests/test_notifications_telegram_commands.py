@@ -1406,6 +1406,43 @@ class TestHandlePositionsCommand:
         assert "保证金" in msg
         assert "风险" in msg
 
+    def test_positions_includes_current_price_when_callback_provided(
+        self,
+        base_command: TelegramCommand,
+    ) -> None:
+        positions = {
+            "BTC": {
+                "side": "long",
+                "quantity": 0.5,
+                "entry_price": 50000.0,
+                "profit_target": 55000.0,
+                "stop_loss": 48000.0,
+                "leverage": 5,
+                "margin": 1000.0,
+                "risk_usd": 200.0,
+            },
+        }
+
+        def fake_get_current_price(coin: str) -> float:
+            assert coin == "BTC"
+            return 50500.1234
+
+        result = handle_positions_command(
+            base_command,
+            positions=positions,
+            get_current_price_fn=fake_get_current_price,
+        )
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert result.state_changed is False
+        assert result.action == "POSITIONS_SNAPSHOT"
+
+        msg = result.message
+        assert "当前持仓列表" in msg
+        assert "BTC" in msg
+        assert "现价" in msg
+
 
 class TestHandleRiskCommand:
     """Tests for handle_risk_command function (risk control status)."""

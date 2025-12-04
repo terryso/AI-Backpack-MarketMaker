@@ -142,6 +142,7 @@ from notifications.telegram_commands import (
     create_kill_resume_handlers,
     register_telegram_commands,
 )
+from notifications.commands.positions import parse_live_positions
 from core.trading_loop import log_risk_control_event
 
 # ───────────────────────── METRICS ─────────────────────────
@@ -847,6 +848,27 @@ def update_telegram_tpsl(
         TPSLUpdateResult with success status and old/new values.
     """
     from notifications.commands.tpsl import TPSLUpdateResult
+    
+    # Try to sync local positions with live exchange snapshot if coin is missing
+    if coin not in positions:
+        try:
+            snapshot = get_live_account_snapshot()
+        except Exception as exc:
+            logging.warning(
+                "update_telegram_tpsl: failed to get live snapshot for %s: %s",
+                coin,
+                exc,
+            )
+            snapshot = None
+        
+        if isinstance(snapshot, dict):
+            raw_positions = snapshot.get("positions")
+            if isinstance(raw_positions, list):
+                live_positions = parse_live_positions(raw_positions)
+                live_pos = live_positions.get(coin)
+                if live_pos:
+                    positions[coin] = live_pos
+                    _core_state.positions[coin] = live_pos
     
     if coin not in positions:
         return TPSLUpdateResult(

@@ -298,7 +298,11 @@ def create_kill_resume_handlers(
                 account_snapshot_fn=account_snapshot_fn,
                 positions_snapshot_fn=positions_snapshot_fn,
             )
-            result = handle_positions_command(cmd, positions=current_positions)
+            result = handle_positions_command(
+                cmd,
+                positions=current_positions,
+                get_current_price_fn=get_current_price_fn,
+            )
         except Exception as exc:
             logging.error("Error processing Telegram /positions command: %s", exc)
             fallback = "⚠️ *暂时无法获取持仓信息，请稍后重试。*"

@@ -26,6 +26,8 @@ OVERRIDE_WHITELIST: Set[str] = frozenset({
     "TRADEBOT_INTERVAL",
     "TRADEBOT_LLM_TEMPERATURE",
     "TRADEBOT_LOOP_ENABLED",
+    "DEFAULT_TP_PCT",
+    "DEFAULT_SL_PCT",
 })
 
 # Valid values for enum-like keys
@@ -247,6 +249,24 @@ def validate_override_value(key: str, value: Any) -> tuple[bool, Optional[str]]:
                 f"TRADEBOT_LLM_TEMPERATURE {float_value} out of range "
                 f"[{LLM_TEMPERATURE_MIN}, {LLM_TEMPERATURE_MAX}]"
             )
+        return True, None
+    
+    if key == "DEFAULT_TP_PCT":
+        try:
+            float_value = float(value)
+        except (TypeError, ValueError):
+            return False, f"Invalid DEFAULT_TP_PCT '{value}'; must be a number"
+        if float_value < 0.0 or float_value > 100.0:
+            return False, "DEFAULT_TP_PCT out of range [0, 100]"
+        return True, None
+    
+    if key == "DEFAULT_SL_PCT":
+        try:
+            float_value = float(value)
+        except (TypeError, ValueError):
+            return False, f"Invalid DEFAULT_SL_PCT '{value}'; must be a number"
+        if float_value < 0.0 or float_value > 100.0:
+            return False, "DEFAULT_SL_PCT out of range [0, 100]"
         return True, None
     
     if key == "LIVE_TRADING_ENABLED":

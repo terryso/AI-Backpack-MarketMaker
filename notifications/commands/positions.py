@@ -190,6 +190,7 @@ def handle_positions_command(
     cmd: TelegramCommand,
     *,
     positions: Dict[str, Dict[str, Any]],
+    get_current_price_fn: Optional[Callable[[str], Optional[float]]] = None,
 ) -> CommandResult:
     """Handle the /positions command to show detailed open positions.
     
@@ -270,9 +271,30 @@ def handle_positions_command(
             leverage_float = 0.0
         leverage_str = trim_decimal(leverage_float, max_decimals=2)
 
-        lines.append(
-            f"• {coin_display} {side_display} x{qty_str} @ ${entry_str}"
-        )
+        current_price = 0.0
+        if get_current_price_fn is not None:
+            try:
+                price_val = get_current_price_fn(str(coin))
+            except Exception as exc:
+                logging.warning("Failed to get current price for %s: %s", coin, exc)
+                price_val = None
+            try:
+                if price_val is not None:
+                    current_price = float(price_val)
+            except (TypeError, ValueError):
+                current_price = 0.0
+        current_price_str = ""
+        if current_price > 0.0:
+            current_price_str = trim_decimal(current_price, max_decimals=4)
+
+        if current_price_str:
+            lines.append(
+                f"• {coin_display} {side_display} x{qty_str} @ ${entry_str} (现价 ${current_price_str})"
+            )
+        else:
+            lines.append(
+                f"• {coin_display} {side_display} x{qty_str} @ ${entry_str}"
+            )
         if tp > 0.0 or sl > 0.0:
             lines.append(
                 f"  TP ${tp_str} / SL ${sl_str} / 杠杆 {leverage_str}"
