@@ -1,6 +1,4 @@
-# DeepSeek Paper Trading Bot 产品需求文档（反向工程草稿）
-
-> 本 PRD 基于现有代码和 README 反向整理，目标是帮助理解当前能力边界，并为后续扩展提供统一的产品视角。
+# DeepSeek Paper Trading Bot 产品需求文档
 
 ## 1. 产品概述
 
