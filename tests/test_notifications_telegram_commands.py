@@ -1404,7 +1404,6 @@ class TestHandlePositionsCommand:
         assert "SL" in msg
         assert "杠杆" in msg
         assert "保证金" in msg
-        assert "风险" in msg
 
     def test_positions_includes_current_price_when_callback_provided(
         self,

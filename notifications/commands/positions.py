@@ -12,6 +12,7 @@ from notifications.commands.base import (
     escape_markdown,
     trim_decimal,
 )
+from config.settings import IS_LIVE_BACKEND, LIVE_MAX_LEVERAGE
 
 
 def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -82,8 +83,11 @@ def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[
         if notional == 0.0 and entry_price > 0.0 and quantity > 0.0:
             notional = abs(quantity * entry_price)
 
-        # imf: 初始保证金系数
+        # imf: 初始保证金系数（代表该合约支持的最大杠杆的倒数，而不是实际杠杆）
         imf = _safe_float(pos.get("imf"))
+
+        # 先尝试使用交易所返回的实际杠杆
+        leverage = _safe_float(pos.get("leverage"))
 
         # 保证金
         margin = 0.0
@@ -91,15 +95,22 @@ def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[
             margin = _safe_float(pos.get(margin_field))
             if margin > 0.0:
                 break
-        if margin <= 0.0 and notional > 0.0 and imf > 0.0:
-            margin = abs(notional) * imf
 
-        # 杠杆
-        leverage = 0.0
-        if margin > 0.0 and notional > 0.0:
-            leverage = notional / margin
-        if leverage <= 0.0:
-            leverage = _safe_float(pos.get("leverage"))
+        # 如果没有显式保证金，但有 notional 和杠杆，则用 notional / leverage 推导
+        if margin <= 0.0 and notional > 0.0 and leverage > 0.0:
+            margin = abs(notional) / leverage
+
+        # 若仍然没有保证金，在实盘后端下优先使用 LIVE_MAX_LEVERAGE 反推
+        if margin <= 0.0 and notional > 0.0:
+            if IS_LIVE_BACKEND and LIVE_MAX_LEVERAGE > 0.0:
+                margin = abs(notional) / LIVE_MAX_LEVERAGE
+            elif imf > 0.0:
+                # 仅在无更好信息时，将 imf 作为兜底近似
+                margin = abs(notional) * imf
+
+        # 最终确定杠杆：若未能从交易所拿到，则用 notional / margin 反推
+        if leverage <= 0.0 and margin > 0.0 and notional > 0.0:
+            leverage = abs(notional) / margin
         if leverage <= 0.0 and imf > 0.0:
             leverage = 1.0 / imf
         if leverage <= 0.0:
@@ -159,6 +170,7 @@ def get_positions_from_snapshot(
         Dict mapping coin symbol to position data.
     """
     positions: Dict[str, Dict[str, Any]] = {}
+    local_snapshot: Optional[Dict[str, Dict[str, Any]]] = None
     
     # 1) 优先尝试从实盘账户 snapshot 中提取持仓
     if account_snapshot_fn is not None:
@@ -172,11 +184,36 @@ def get_positions_from_snapshot(
             raw_positions = snapshot.get("positions")
             if isinstance(raw_positions, list):
                 positions = parse_live_positions(raw_positions)
+
+    # 1b) 若存在本地持仓视图，则用本地 TP/SL 补全实盘视图中的 TP/SL
+    if positions and positions_snapshot_fn is not None:
+        try:
+            local_snapshot = positions_snapshot_fn()
+        except Exception as exc:
+            logging.error("Error calling positions_snapshot_fn for TP/SL overlay: %s", exc)
+            local_snapshot = None
+        if isinstance(local_snapshot, dict):
+            for coin, live_pos in positions.items():
+                local_pos = local_snapshot.get(coin)
+                if not isinstance(local_pos, dict):
+                    continue
+
+                live_tp = _safe_float(live_pos.get("profit_target"))
+                live_sl = _safe_float(live_pos.get("stop_loss"))
+                local_tp = _safe_float(local_pos.get("profit_target"))
+                local_sl = _safe_float(local_pos.get("stop_loss"))
+
+                if live_tp <= 0.0 and local_tp > 0.0:
+                    live_pos["profit_target"] = local_tp
+                if live_sl <= 0.0 and local_sl > 0.0:
+                    live_pos["stop_loss"] = local_sl
     
     # 2) 若实盘 snapshot 不可用或无有效持仓，则回退到本地 positions 视图
     if not positions and positions_snapshot_fn is not None:
         try:
-            local_snapshot = positions_snapshot_fn()
+            # 复用上面获取的 local_snapshot（若已存在），否则重新获取
+            if local_snapshot is None:
+                local_snapshot = positions_snapshot_fn()
         except Exception as exc:
             logging.error("Error calling positions_snapshot_fn: %s", exc)
             local_snapshot = None
@@ -306,7 +343,7 @@ def handle_positions_command(
 
         if margin > 0.0 or risk_usd > 0.0:
             lines.append(
-                f"  保证金 ${margin:,.2f} / 风险 ${risk_usd:,.2f}"
+                f"  保证金 ${margin:,.2f}"
             )
 
         if pnl != 0.0 or liq_price > 0.0:
