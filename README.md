@@ -1,4 +1,4 @@
-# Backpack 刷量交易 Bot（基于 DeepSeek）
+# Backpack 刷量交易 Bot
 
 本项目是一个面向合约量化刷量/做市场景的交易 Bot，支持：
 
