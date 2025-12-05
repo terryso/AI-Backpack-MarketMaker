@@ -1442,6 +1442,45 @@ class TestHandlePositionsCommand:
         assert "BTC" in msg
         assert "现价" in msg
 
+    def test_positions_includes_unrealized_pnl_when_price_available(
+        self,
+        base_command: TelegramCommand,
+    ) -> None:
+        """当有当前价格时，应同时展示总盈亏和未平仓盈亏。"""
+        positions = {
+            "BTC": {
+                "side": "long",
+                "quantity": 0.004,
+                "entry_price": 92125.1764,
+                "profit_target": 0.0,
+                "stop_loss": 0.0,
+                "leverage": 10,
+                "margin": 36.96,
+                # pnl 字段代表总盈亏（已实现+未实现），保持现有含义
+                "pnl": 5.66,
+            },
+        }
+
+        def fake_get_current_price(coin: str) -> float:
+            assert coin == "BTC"
+            # 使用接近真实的当前价格计算未平仓盈亏
+            return 92404.2
+
+        result = handle_positions_command(
+            base_command,
+            positions=positions,
+            get_current_price_fn=fake_get_current_price,
+        )
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+
+        msg = result.message
+        # 总盈亏字段仍然存在
+        assert "当前盈亏" in msg
+        # 新增的未平仓盈亏字段应该存在
+        assert "未平仓盈亏" in msg
+
 
 class TestHandleRiskCommand:
     """Tests for handle_risk_command function (risk control status)."""

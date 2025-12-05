@@ -13,6 +13,7 @@ from notifications.commands.base import (
     trim_decimal,
 )
 from config.settings import IS_LIVE_BACKEND, LIVE_MAX_LEVERAGE
+from core.metrics import calculate_unrealized_pnl_for_position
 
 
 def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -324,6 +325,21 @@ def handle_positions_command(
         if current_price > 0.0:
             current_price_str = trim_decimal(current_price, max_decimals=4)
 
+        unrealized_pnl = 0.0
+        has_unrealized_source = current_price > 0.0 and quantity > 0.0 and entry_price > 0.0
+        if has_unrealized_source:
+            try:
+                unrealized_pnl = calculate_unrealized_pnl_for_position(
+                    {
+                        "side": pos.get("side", side_raw),
+                        "quantity": quantity,
+                        "entry_price": entry_price,
+                    },
+                    current_price,
+                )
+            except Exception:
+                unrealized_pnl = 0.0
+
         if current_price_str:
             lines.append(
                 f"• {coin_display} {side_display} x{qty_str} @ ${entry_str} (现价 ${current_price_str})"
@@ -351,6 +367,11 @@ def handle_positions_command(
             liq_part = f" / 强平价 ${liq_str}" if liq_price > 0.0 else ""
             lines.append(
                 f"  当前盈亏 {pnl:+,.2f}{liq_part}"
+            )
+
+        if has_unrealized_source:
+            lines.append(
+                f"  未平仓盈亏 {unrealized_pnl:+,.2f}"
             )
 
     message = "\n".join(lines)
