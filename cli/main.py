@@ -21,6 +21,7 @@ import click
 from cli.context import build_cli_context, save_risk_control_state, CLIContext
 from cli.output import print_result, print_error, strip_markdown
 from notifications.commands.base import TelegramCommand, CommandResult
+from notifications.commands.audit import DEFAULT_EXCHANGE, SUPPORTED_EXCHANGES
 
 
 # Configure logging for CLI
@@ -539,9 +540,20 @@ def symbols_remove(ctx: click.Context, symbol: str) -> None:
 @cli.command()
 @click.argument('start_time', required=False, default=None)
 @click.argument('end_time', required=False, default=None)
+@click.option(
+    '--exchange', '-e',
+    default=DEFAULT_EXCHANGE,
+    type=click.Choice(SUPPORTED_EXCHANGES, case_sensitive=False),
+    help='交易所名称 (默认: 根据 TRADING_BACKEND 自动推断)',
+)
 @click.pass_context
-def audit(ctx: click.Context, start_time: Optional[str], end_time: Optional[str]) -> None:
-    """查看 Backpack 账户资金变动分析
+def audit(
+    ctx: click.Context,
+    start_time: Optional[str],
+    end_time: Optional[str],
+    exchange: str,
+) -> None:
+    """查看账户资金变动分析
     
     START_TIME: 开始时间 (可选，默认今天 00:00)
     
@@ -553,9 +565,10 @@ def audit(ctx: click.Context, start_time: Optional[str], end_time: Optional[str]
         YYYY-MM-DD HH:MM - 日期时间
     
     示例:
-        llm-trader audit                    # 今天 00:00 到现在
-        llm-trader audit 09:00              # 今天 09:00 到现在
-        llm-trader audit 09:00 18:00        # 今天 09:00 到 18:00
+        llm-trader audit                        # 今天 00:00 到现在 (Backpack)
+        llm-trader audit 09:00                  # 今天 09:00 到现在
+        llm-trader audit 09:00 18:00            # 今天 09:00 到 18:00
+        llm-trader audit --exchange backpack    # 指定交易所
     """
     from notifications.commands.audit import handle_audit_command
     
@@ -566,7 +579,7 @@ def audit(ctx: click.Context, start_time: Optional[str], end_time: Optional[str]
         args.append(end_time)
     
     cmd = _make_cmd("audit", args)
-    result = handle_audit_command(cmd)
+    result = handle_audit_command(cmd, exchange=exchange)
     _handle_result(result)
 
 

@@ -5,9 +5,11 @@ This module provides the ExchangeClient implementation for Binance Futures.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
-from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult, AuditData
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -19,6 +21,18 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default if result != result else result  # NaN check
     except (TypeError, ValueError):
         return default
+
+
+def _safe_decimal(value: Any) -> Optional[Decimal]:
+    """Safely convert a value to Decimal."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _parse_coin_from_symbol(symbol: str) -> str:
@@ -167,6 +181,93 @@ class BinanceFuturesExchangeClient:
         except Exception as e:
             logging.warning("Failed to get price for %s: %s", symbol, e)
             return None
+
+    # ═══════════════════════════════════════════════════════════════════
+    # AUDIT DATA (for /audit command)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def fetch_audit_data(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> AuditData:
+        """Aggregate Binance Futures income history into AuditData.
+
+        使用 Binance USDT-M 永续合约的收益历史 (income history) 统计：
+        - FUNDING_FEE      -> 资金费 (funding_total / funding_by_symbol)
+        - REALIZED_PNL     -> 结算 RealizePnl
+        - COMMISSION       -> 手续费 TradingFees
+        - 其他类型         -> 归入 settlement_by_source 的对应类型
+        """
+        if start_utc.tzinfo is None:
+            start_utc = start_utc.replace(tzinfo=timezone.utc)
+        if end_utc.tzinfo is None:
+            end_utc = end_utc.replace(tzinfo=timezone.utc)
+
+        start_ms = int(start_utc.timestamp() * 1000)
+        end_ms = int(end_utc.timestamp() * 1000)
+
+        incomes: List[Dict[str, Any]] = []
+        try:
+            params: Dict[str, Any] = {
+                "startTime": start_ms,
+                "endTime": end_ms,
+                "limit": 1000,
+            }
+            raw = self._exchange.fapiPrivateGetIncome(params)
+            if isinstance(raw, list):
+                incomes = [item for item in raw if isinstance(item, dict)]
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Binance income history request failed: %s", exc)
+
+        funding_total = Decimal("0")
+        funding_by_symbol: Dict[str, Decimal] = {}
+        settlement_total = Decimal("0")
+        settlement_by_source: Dict[str, Decimal] = {}
+
+        for item in incomes:
+            income_type = str(item.get("incomeType") or item.get("type") or "").upper()
+            amount = _safe_decimal(item.get("income"))
+            if amount is None or amount == 0:
+                continue
+
+            symbol = str(item.get("symbol") or "").upper()
+            key_symbol = symbol or "(unknown)"
+
+            if income_type == "FUNDING_FEE":
+                funding_total += amount
+                funding_by_symbol[key_symbol] = funding_by_symbol.get(key_symbol, Decimal("0")) + amount
+                continue
+
+            if income_type == "REALIZED_PNL":
+                settlement_total += amount
+                settlement_by_source["RealizePnl"] = settlement_by_source.get("RealizePnl", Decimal("0")) + amount
+                continue
+
+            if income_type == "COMMISSION":
+                settlement_total += amount
+                settlement_by_source["TradingFees"] = settlement_by_source.get("TradingFees", Decimal("0")) + amount
+                continue
+
+            # 其他类型收入/支出统一记入各自类型的桶中
+            label = income_type or "Other"
+            settlement_total += amount
+            settlement_by_source[label] = settlement_by_source.get(label, Decimal("0")) + amount
+
+        # 目前暂不从 Binance 提取充值/提现数据，保持为 0
+        deposit_total = Decimal("0")
+        withdrawal_total = Decimal("0")
+
+        return AuditData(
+            backend="binance_futures",
+            funding_total=funding_total,
+            funding_by_symbol=funding_by_symbol,
+            settlement_total=settlement_total,
+            settlement_by_source=settlement_by_source,
+            deposit_total=deposit_total,
+            withdrawal_total=withdrawal_total,
+            raw={"income_history": incomes},
+        )
 
     def update_tpsl(
         self,

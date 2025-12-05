@@ -6,6 +6,8 @@ exchange client implementations.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
@@ -158,5 +160,66 @@ class ExchangeClient(Protocol):
         size 省略时表示「全仓平掉当前在该 backend 上的持仓」；
         fallback_price 仅作为在无法从订单簿获取合理价格时的兜底输入，
         是否以及如何使用由具体 backend 决定。
+        """
+        ...
+
+
+@dataclass
+class AuditData:
+    """统一的账户资金变动审计数据结构。
+    
+    各交易所客户端应将原始审计数据转换为此格式，
+    使上层命令处理逻辑无需关心交易所差异。
+    
+    Attributes:
+        backend: 后端标识 (如 "backpack_futures", "binance_futures")。
+        funding_total: 资金费合计。
+        funding_by_symbol: 按交易对分组的资金费。
+        settlement_total: 结算合计 (含手续费、已实现盈亏)。
+        settlement_by_source: 按来源分组的结算 (如 TradingFees, RealizePnl)。
+        deposit_total: 充值合计。
+        withdrawal_total: 提现合计 (负值)。
+        raw: 原始数据 (调试用)。
+    """
+    backend: str
+    funding_total: Decimal = field(default_factory=lambda: Decimal("0"))
+    funding_by_symbol: Dict[str, Decimal] = field(default_factory=dict)
+    settlement_total: Decimal = field(default_factory=lambda: Decimal("0"))
+    settlement_by_source: Dict[str, Decimal] = field(default_factory=dict)
+    deposit_total: Decimal = field(default_factory=lambda: Decimal("0"))
+    withdrawal_total: Decimal = field(default_factory=lambda: Decimal("0"))
+    raw: Optional[Dict[str, Any]] = None
+    
+    @property
+    def net_change(self) -> Decimal:
+        """计算净变动。"""
+        return (
+            self.funding_total
+            + self.settlement_total
+            + self.deposit_total
+            + self.withdrawal_total
+        )
+
+
+@runtime_checkable
+class AuditProvider(Protocol):
+    """账户资金变动审计数据提供者接口。
+    
+    实现此接口的交易所客户端可以提供资金变动审计功能。
+    """
+    
+    def fetch_audit_data(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> AuditData:
+        """获取指定时间范围内的资金变动审计数据。
+        
+        Args:
+            start_utc: 开始时间 (UTC)。
+            end_utc: 结束时间 (UTC)。
+            
+        Returns:
+            AuditData 包含资金费、结算、充值、提现等汇总数据。
         """
         ...

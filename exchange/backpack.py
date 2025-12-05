@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult
+from datetime import datetime, timezone
+from decimal import InvalidOperation
+
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult, AuditData
 
 
 class BackpackFuturesExchangeClient:
@@ -845,3 +848,256 @@ class BackpackFuturesExchangeClient:
             len(active_positions),
         )
         return active_positions
+
+    # ═══════════════════════════════════════════════════════════════════
+    # AUDIT DATA (for /audit command)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def fetch_audit_data(
+        self,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> AuditData:
+        """获取指定时间范围内的资金变动审计数据。
+        
+        实现 AuditProvider 接口。
+        
+        Args:
+            start_utc: 开始时间 (UTC)。
+            end_utc: 结束时间 (UTC)。
+            
+        Returns:
+            AuditData 包含资金费、结算、充值、提现等汇总数据。
+        """
+        if start_utc.tzinfo is None:
+            start_utc = start_utc.replace(tzinfo=timezone.utc)
+        if end_utc.tzinfo is None:
+            end_utc = end_utc.replace(tzinfo=timezone.utc)
+
+        datasets = self._fetch_all_audit_history()
+
+        def in_range(ts: Optional[datetime]) -> bool:
+            if ts is None:
+                return False
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            ts_utc = ts.astimezone(timezone.utc)
+            return start_utc <= ts_utc <= end_utc
+
+        # 资金费汇总
+        funding_total = Decimal("0")
+        funding_by_symbol: Dict[str, Decimal] = {}
+        for item in datasets.get("funding", []):
+            ts = self._parse_backpack_timestamp(
+                item.get("intervalEndTimestamp") or item.get("timestamp")
+            )
+            if not in_range(ts):
+                continue
+            qty = self._safe_decimal(item.get("quantity"))
+            if qty is None:
+                continue
+            symbol = str(item.get("symbol") or "").strip() or "(unknown)"
+            funding_total += qty
+            funding_by_symbol[symbol] = funding_by_symbol.get(symbol, Decimal("0")) + qty
+
+        # 结算汇总
+        settlement_total = Decimal("0")
+        settlement_by_source: Dict[str, Decimal] = {}
+        for item in datasets.get("settlements", []):
+            ts = self._parse_backpack_timestamp(item.get("timestamp"))
+            if not in_range(ts):
+                continue
+            qty = self._safe_decimal(item.get("quantity"))
+            if qty is None:
+                continue
+            source = str(item.get("source") or "").strip() or "(unknown)"
+            settlement_total += qty
+            settlement_by_source[source] = settlement_by_source.get(source, Decimal("0")) + qty
+
+        # 充值汇总
+        deposit_total = Decimal("0")
+        for item in datasets.get("deposits", []):
+            ts = self._parse_backpack_timestamp(item.get("createdAt") or item.get("timestamp"))
+            if not in_range(ts):
+                continue
+            qty = self._safe_decimal(item.get("quantity"))
+            if qty is None:
+                continue
+            deposit_total += qty
+
+        # 提现汇总
+        withdrawal_total = Decimal("0")
+        for item in datasets.get("withdrawals", []):
+            ts = self._parse_backpack_timestamp(item.get("createdAt") or item.get("timestamp"))
+            if not in_range(ts):
+                continue
+            qty = self._safe_decimal(item.get("quantity"))
+            if qty is None:
+                continue
+            withdrawal_total -= qty  # 提现为负
+
+        return AuditData(
+            backend="backpack_futures",
+            funding_total=funding_total,
+            funding_by_symbol=funding_by_symbol,
+            settlement_total=settlement_total,
+            settlement_by_source=settlement_by_source,
+            deposit_total=deposit_total,
+            withdrawal_total=withdrawal_total,
+            raw=datasets,
+        )
+
+    def _fetch_all_audit_history(self) -> Dict[str, List[Dict[str, Any]]]:
+        """拉取需要用到的所有历史记录。"""
+        datasets: Dict[str, List[Dict[str, Any]]] = {}
+        common_query = {"limit": 1000}
+
+        datasets["fills"] = self._signed_get(
+            instruction="fillHistoryQueryAll",
+            path="/wapi/v1/history/fills",
+            label="fill history",
+            query_params=common_query,
+        )
+
+        datasets["funding"] = self._signed_get(
+            instruction="fundingHistoryQueryAll",
+            path="/wapi/v1/history/funding",
+            label="funding history",
+            query_params=common_query,
+        )
+
+        datasets["settlements"] = self._signed_get(
+            instruction="settlementHistoryQueryAll",
+            path="/wapi/v1/history/settlement",
+            label="settlement history",
+            query_params=common_query,
+        )
+
+        datasets["deposits"] = self._signed_get(
+            instruction="depositQueryAll",
+            path="/wapi/v1/capital/deposits",
+            label="deposit history",
+            query_params=common_query,
+        )
+
+        datasets["withdrawals"] = self._signed_get(
+            instruction="withdrawalQueryAll",
+            path="/wapi/v1/capital/withdrawals",
+            label="withdrawal history",
+            query_params=common_query,
+        )
+
+        return datasets
+
+    def _signed_get(
+        self,
+        *,
+        instruction: str,
+        path: str,
+        label: str,
+        query_params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """使用签名发起 GET 请求。"""
+        params: Dict[str, Any] = {}
+        if query_params:
+            params.update(query_params)
+        headers = self._sign(instruction, params)
+        url = f"{self._base_url}{path}"
+        
+        try:
+            response = self._session.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=self._timeout,
+            )
+        except Exception as exc:
+            logging.warning("%s request failed: %s", label, exc)
+            return []
+
+        try:
+            data = response.json()
+        except ValueError:
+            logging.warning(
+                "%s request returned non-JSON payload. status=%s",
+                label,
+                response.status_code,
+            )
+            return []
+
+        if response.status_code != 200:
+            logging.warning("%s request HTTP %s: %s", label, response.status_code, data)
+            return []
+
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            items = data.get("items") if isinstance(data.get("items"), list) else None
+            if items is not None:
+                return items
+            return [data]
+
+        logging.warning("%s request returned unexpected payload type: %r", label, type(data))
+        return []
+
+    @staticmethod
+    def _parse_backpack_timestamp(value: Any) -> Optional[datetime]:
+        """将 Backpack 返回的时间字段解析为 UTC datetime。"""
+        if value is None:
+            return None
+
+        # 数值型：视为毫秒时间戳
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+
+        if not isinstance(value, str):
+            return None
+
+        raw = value.strip()
+        if not raw:
+            return None
+
+        # 纯数字字符串：优先按毫秒时间戳解析
+        if raw.isdigit():
+            try:
+                ts_int = int(raw)
+            except ValueError:
+                return None
+            if ts_int > 10**11:
+                ts = ts_int / 1000.0
+            else:
+                ts = float(ts_int)
+            try:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+
+        # ISO8601 字符串
+        iso = raw
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(iso)
+        except ValueError:
+            return None
+
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        return dt
+
+    @staticmethod
+    def _safe_decimal(value: Any) -> Optional[Decimal]:
+        """Safely convert a value to Decimal."""
+        if value is None:
+            return None
+        if isinstance(value, Decimal):
+            return value
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None

@@ -1,74 +1,63 @@
 """
-Handler for /audit command to show Backpack account balance audit.
+Handler for /audit command to show account balance audit.
 
-This module wraps the functionality from scripts/backpack_balance_audit.py
-and exposes it as a Telegram command.
+This module provides a unified audit command that supports multiple exchanges
+via the AuditProvider interface.
 """
 from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, Optional, Union
 
+import ccxt
+
+from config.settings import get_effective_trading_backend
+from exchange.base import AuditData, AuditProvider
 from notifications.commands.base import TelegramCommand, CommandResult, escape_markdown
 
 
-def _parse_backpack_timestamp(value: Any) -> Optional[datetime]:
-    """将 Backpack 返回的时间字段解析为 UTC datetime。
+# 支持的交易所列表（未来可以逐步补齐对应 AuditProvider 实现）
+SUPPORTED_EXCHANGES = ["backpack", "binance", "hyperliquid"]
 
-    支持几种常见格式：
-    - 整数或数字字符串：毫秒时间戳
-    - ISO8601 字符串，带或不带 Z 后缀
+# 交易所显示名称映射
+EXCHANGE_DISPLAY_NAMES: Dict[str, str] = {
+    "backpack": "Backpack",
+    "binance": "Binance",
+    "hyperliquid": "Hyperliquid",
+}
+
+
+_AUDIT_EXCHANGE_BY_TRADING_BACKEND: Dict[str, str] = {
+    "backpack_futures": "backpack",
+    "binance_futures": "binance",
+    "hyperliquid": "hyperliquid",
+}
+
+
+def _resolve_default_exchange() -> str:
+    """根据 TRADING_BACKEND 推断 audit 默认交易所。
+
+    - backpack_futures -> backpack
+    - binance_futures  -> binance
+    - hyperliquid      -> hyperliquid
+    - 其他/未知值       -> fallback 到 backpack
     """
-    if value is None:
-        return None
-
-    # 数值型：视为毫秒时间戳
-    if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    if not isinstance(value, str):
-        return None
-
-    raw = value.strip()
-    if not raw:
-        return None
-
-    # 纯数字字符串：优先按毫秒时间戳解析
-    if raw.isdigit():
-        try:
-            ts_int = int(raw)
-        except ValueError:
-            return None
-        # 粗略判断：大于 10^11 当作毫秒
-        if ts_int > 10**11:
-            ts = ts_int / 1000.0
-        else:
-            ts = float(ts_int)
-        try:
-            return datetime.fromtimestamp(ts, tz=timezone.utc)
-        except (OverflowError, OSError, ValueError):
-            return None
-
-    # ISO8601 字符串
-    iso = raw
-    if iso.endswith("Z"):
-        iso = iso[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(iso)
-    except ValueError:
-        return None
+        backend = get_effective_trading_backend()
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to resolve TRADING_BACKEND for audit: %s", exc)
+        return "backpack"
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-    return dt
+    exchange = _AUDIT_EXCHANGE_BY_TRADING_BACKEND.get(backend)
+    if not exchange:
+        return "backpack"
+    return exchange
+
+
+DEFAULT_EXCHANGE = _resolve_default_exchange()
 
 
 def _format_decimal(value: Decimal, *, places: int = 4) -> str:
@@ -79,236 +68,149 @@ def _format_decimal(value: Decimal, *, places: int = 4) -> str:
     return text or "0"
 
 
-def _safe_decimal(value: Any) -> Optional[Decimal]:
-    """Safely convert a value to Decimal."""
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-
-
-def _signed_get(
-    client: Any,
-    *,
-    instruction: str,
-    path: str,
-    label: str,
-    query_params: Optional[Dict[str, Any]] = None,
-) -> List[Dict[str, Any]]:
-    """使用现有 Backpack 客户端签名并发起 GET 请求。"""
-    params: Dict[str, Any] = {}
-    if query_params:
-        params.update(query_params)
-    headers = client._sign(instruction, params)
-    base_url = getattr(client, "_base_url", "https://api.backpack.exchange")
-    timeout = getattr(client, "_timeout", 10.0)
-
-    url = f"{base_url}{path}"
-    try:
-        response = client._session.get(
-            url,
-            headers=headers,
-            params=params,
-            timeout=timeout,
+def _get_audit_provider(exchange: str) -> AuditProvider:
+    """获取指定交易所的 AuditProvider 实例。
+    
+    Args:
+        exchange: 交易所名称 (如 "backpack")。
+        
+    Returns:
+        实现 AuditProvider 接口的交易所客户端。
+        
+    Raises:
+        ValueError: 如果交易所未配置或不支持。
+    """
+    exchange_lower = exchange.lower().strip()
+    
+    if exchange_lower == "backpack":
+        from exchange.backpack import BackpackFuturesExchangeClient
+        
+        api_public_key = os.getenv("BACKPACK_API_PUBLIC_KEY", "").strip()
+        api_secret_seed = os.getenv("BACKPACK_API_SECRET_SEED", "").strip()
+        
+        if not api_public_key or not api_secret_seed:
+            raise ValueError(
+                "Backpack API 未配置。请在 .env 中设置 "
+                "BACKPACK_API_PUBLIC_KEY 和 BACKPACK_API_SECRET_SEED"
+            )
+        
+        base_url = os.getenv("BACKPACK_API_BASE_URL") or "https://api.backpack.exchange"
+        window_raw = os.getenv("BACKPACK_API_WINDOW_MS") or "5000"
+        try:
+            window_ms = int(window_raw)
+        except (TypeError, ValueError):
+            window_ms = 5000
+        
+        return BackpackFuturesExchangeClient(
+            api_public_key=api_public_key,
+            api_secret_seed=api_secret_seed,
+            base_url=base_url,
+            window_ms=window_ms,
         )
-    except Exception as exc:
-        logging.warning("%s request failed: %s", label, exc)
-        return []
 
-    try:
-        data = response.json()
-    except ValueError:
-        logging.warning(
-            "%s request returned non-JSON payload. status=%s",
-            label,
-            response.status_code,
-        )
-        return []
+    if exchange_lower == "binance":
+        from exchange.binance import BinanceFuturesExchangeClient
 
-    if response.status_code != 200:
-        logging.warning("%s request HTTP %s: %s", label, response.status_code, data)
-        return []
+        api_key = os.getenv("BN_API_KEY", "").strip()
+        api_secret = os.getenv("BN_SECRET", "").strip()
 
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        items = data.get("items") if isinstance(data.get("items"), list) else None
-        if items is not None:
-            return items
-        return [data]
+        if not api_key or not api_secret:
+            raise ValueError(
+                "Binance API 未配置。请在 .env 中设置 "
+                "BN_API_KEY 和 BN_SECRET"
+            )
 
-    logging.warning("%s request returned unexpected payload type: %r", label, type(data))
-    return []
+        try:
+            exchange = ccxt.binanceusdm(
+                {
+                    "apiKey": api_key,
+                    "secret": api_secret,
+                    "enableRateLimit": True,
+                }
+            )
+            # 对于 audit 功能，我们只需要 income history，不强依赖市场元数据。
+            # 某些账户在调用 load_markets() 时可能因为权限或网络问题报错，
+            # 这里将其降级为 warning，避免直接导致 audit 功能不可用。
+            try:
+                exchange.load_markets()
+            except Exception as exc:  # noqa: BLE001
+                logging.warning(
+                    "Binance load_markets failed for audit; continuing without markets: %s",
+                    exc,
+                )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"初始化 Binance Futures 客户端失败: {exc}") from exc
 
-
-def _fetch_audit_data(client: Any) -> Dict[str, List[Dict[str, Any]]]:
-    """Fetch all audit data from Backpack API."""
-    datasets: Dict[str, List[Dict[str, Any]]] = {}
-    common_query = {"limit": 1000}
-
-    datasets["fills"] = _signed_get(
-        client,
-        instruction="fillHistoryQueryAll",
-        path="/wapi/v1/history/fills",
-        label="fill history",
-        query_params=common_query,
-    )
-
-    datasets["funding"] = _signed_get(
-        client,
-        instruction="fundingHistoryQueryAll",
-        path="/wapi/v1/history/funding",
-        label="funding history",
-        query_params=common_query,
-    )
-
-    datasets["settlements"] = _signed_get(
-        client,
-        instruction="settlementHistoryQueryAll",
-        path="/wapi/v1/history/settlement",
-        label="settlement history",
-        query_params=common_query,
-    )
-
-    datasets["deposits"] = _signed_get(
-        client,
-        instruction="depositQueryAll",
-        path="/wapi/v1/capital/deposits",
-        label="deposit history",
-        query_params=common_query,
-    )
-
-    datasets["withdrawals"] = _signed_get(
-        client,
-        instruction="withdrawalQueryAll",
-        path="/wapi/v1/capital/withdrawals",
-        label="withdrawal history",
-        query_params=common_query,
-    )
-
-    return datasets
+        return BinanceFuturesExchangeClient(exchange)
+    
+    raise ValueError(f"交易所 '{exchange}' 不支持 audit 功能")
 
 
-def _analyze_audit_data(
-    datasets: Dict[str, List[Dict[str, Any]]],
+def format_audit_message(
+    audit_data: AuditData,
     *,
     start_utc: datetime,
     end_utc: datetime,
-    local_tz: timezone,
+    local_tz: Any,
 ) -> str:
-    """Analyze audit data and return formatted message for Telegram."""
-    if start_utc.tzinfo is None:
-        start_utc = start_utc.replace(tzinfo=timezone.utc)
-    if end_utc.tzinfo is None:
-        end_utc = end_utc.replace(tzinfo=timezone.utc)
-
-    def in_range(ts: Optional[datetime]) -> bool:
-        if ts is None:
-            return False
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        ts_utc = ts.astimezone(timezone.utc)
-        return start_utc <= ts_utc <= end_utc
-
-    # 资金费汇总
-    funding_total = Decimal("0")
-    funding_by_symbol: Dict[str, Decimal] = {}
-    for item in datasets.get("funding", []):
-        ts = _parse_backpack_timestamp(item.get("intervalEndTimestamp") or item.get("timestamp"))
-        if not in_range(ts):
-            continue
-        qty = _safe_decimal(item.get("quantity"))
-        if qty is None:
-            continue
-        symbol = str(item.get("symbol") or "").strip() or "(unknown)"
-        funding_total += qty
-        funding_by_symbol[symbol] = funding_by_symbol.get(symbol, Decimal("0")) + qty
-
-    # 结算汇总
-    settlement_total = Decimal("0")
-    settlement_by_source: Dict[str, Decimal] = {}
-    for item in datasets.get("settlements", []):
-        ts = _parse_backpack_timestamp(item.get("timestamp"))
-        if not in_range(ts):
-            continue
-        qty = _safe_decimal(item.get("quantity"))
-        if qty is None:
-            continue
-        source = str(item.get("source") or "").strip() or "(unknown)"
-        settlement_total += qty
-        settlement_by_source[source] = settlement_by_source.get(source, Decimal("0")) + qty
-
-    # 充值汇总
-    deposit_total = Decimal("0")
-    for item in datasets.get("deposits", []):
-        ts = _parse_backpack_timestamp(item.get("createdAt") or item.get("timestamp"))
-        if not in_range(ts):
-            continue
-        qty = _safe_decimal(item.get("quantity"))
-        if qty is None:
-            continue
-        deposit_total += qty
-
-    # 提现汇总
-    withdrawal_total = Decimal("0")
-    for item in datasets.get("withdrawals", []):
-        ts = _parse_backpack_timestamp(item.get("createdAt") or item.get("timestamp"))
-        if not in_range(ts):
-            continue
-        qty = _safe_decimal(item.get("quantity"))
-        if qty is None:
-            continue
-        withdrawal_total -= qty  # 提现为负
-
-    # 净变动
-    net_change = funding_total + settlement_total + deposit_total + withdrawal_total
-
+    """将 AuditData 格式化为 Telegram 消息。
+    
+    Args:
+        audit_data: 审计数据。
+        start_utc: 开始时间 (UTC)。
+        end_utc: 结束时间 (UTC)。
+        local_tz: 本地时区。
+        
+    Returns:
+        格式化的 Telegram 消息 (MarkdownV2)。
+    """
+    # 获取交易所显示名称
+    exchange_name = EXCHANGE_DISPLAY_NAMES.get(
+        audit_data.backend.replace("_futures", ""),
+        audit_data.backend,
+    )
+    
     # 构建消息
     start_local = start_utc.astimezone(local_tz)
     end_local = end_utc.astimezone(local_tz)
-
-    # Format time strings outside f-string to avoid backslash issues
+    
     start_str = start_local.strftime('%Y-%m-%d %H:%M').replace('-', '\\-')
     end_str = end_local.strftime('%H:%M')
     
     lines = [
-        "📊 *Backpack 资金变动分析*\n",
+        f"📊 *{escape_markdown(exchange_name)} 资金变动分析*\n",
         f"*时间范围:* `{start_str}` \\- `{end_str}`\n",
     ]
-
+    
     # 资金费
     lines.append("*\\[资金费\\]*")
-    lines.append(f"  合计: `{escape_markdown(_format_decimal(funding_total))} USDC`")
-    if funding_by_symbol:
-        for symbol, qty in sorted(funding_by_symbol.items()):
+    lines.append(f"  合计: `{escape_markdown(_format_decimal(audit_data.funding_total))} USDC`")
+    if audit_data.funding_by_symbol:
+        for symbol, qty in sorted(audit_data.funding_by_symbol.items()):
             lines.append(f"  • {escape_markdown(symbol)}: `{escape_markdown(_format_decimal(qty))}`")
     lines.append("")
-
+    
     # 结算/手续费/PnL
     lines.append("*\\[结算/手续费/PnL\\]*")
-    lines.append(f"  合计: `{escape_markdown(_format_decimal(settlement_total))} USDC`")
-    if settlement_by_source:
-        for source, qty in sorted(settlement_by_source.items()):
+    lines.append(f"  合计: `{escape_markdown(_format_decimal(audit_data.settlement_total))} USDC`")
+    if audit_data.settlement_by_source:
+        for source, qty in sorted(audit_data.settlement_by_source.items()):
             lines.append(f"  • {escape_markdown(source)}: `{escape_markdown(_format_decimal(qty))}`")
     lines.append("")
-
+    
     # 充值/提现
-    if deposit_total != 0 or withdrawal_total != 0:
+    if audit_data.deposit_total != 0 or audit_data.withdrawal_total != 0:
         lines.append("*\\[充值/提现\\]*")
-        if deposit_total != 0:
-            lines.append(f"  充值: `{escape_markdown(_format_decimal(deposit_total))}`")
-        if withdrawal_total != 0:
-            lines.append(f"  提现: `{escape_markdown(_format_decimal(withdrawal_total))}`")
+        if audit_data.deposit_total != 0:
+            lines.append(f"  充值: `{escape_markdown(_format_decimal(audit_data.deposit_total))}`")
+        if audit_data.withdrawal_total != 0:
+            lines.append(f"  提现: `{escape_markdown(_format_decimal(audit_data.withdrawal_total))}`")
         lines.append("")
-
+    
     # 净变动
     lines.append("*\\[综合估算\\]*")
-    lines.append(f"  净变动: `{escape_markdown(_format_decimal(net_change))} USDC`")
-
+    lines.append(f"  净变动: `{escape_markdown(_format_decimal(audit_data.net_change))} USDC`")
+    
     return "\n".join(lines)
 
 
@@ -358,8 +260,11 @@ def _get_default_time_range(local_tz: timezone) -> tuple[datetime, datetime]:
     return start_local.astimezone(timezone.utc), now_local.astimezone(timezone.utc)
 
 
-def handle_audit_command(cmd: TelegramCommand) -> CommandResult:
-    """Handle the /audit command to show Backpack balance audit.
+def handle_audit_command(
+    cmd: TelegramCommand,
+    exchange: Optional[str] = None,
+) -> CommandResult:
+    """Handle the /audit command to show account balance audit.
     
     Usage:
         /audit              - 查看今天 00:00 到当前时间的资金变动
@@ -368,34 +273,22 @@ def handle_audit_command(cmd: TelegramCommand) -> CommandResult:
     
     Args:
         cmd: The TelegramCommand object for /audit.
+        exchange: 交易所名称 (默认 "backpack")。
         
     Returns:
         CommandResult with success status and audit message.
     """
+    # 如果调用方未显式指定，则根据 TRADING_BACKEND 推断默认交易所
+    if not exchange:
+        exchange = _resolve_default_exchange()
+
     logging.info(
-        "Telegram /audit command received: chat_id=%s, message_id=%d, args=%s",
+        "Telegram /audit command received: chat_id=%s, message_id=%d, args=%s, exchange=%s",
         cmd.chat_id,
         cmd.message_id,
         cmd.args,
+        exchange,
     )
-
-    # Check if Backpack is configured
-    api_public_key = os.getenv("BACKPACK_API_PUBLIC_KEY", "").strip()
-    api_secret_seed = os.getenv("BACKPACK_API_SECRET_SEED", "").strip()
-
-    if not api_public_key or not api_secret_seed:
-        message = (
-            "❌ *Backpack API 未配置*\n\n"
-            "请在 `.env` 中配置以下环境变量:\n"
-            "• `BACKPACK_API_PUBLIC_KEY`\n"
-            "• `BACKPACK_API_SECRET_SEED`"
-        )
-        return CommandResult(
-            success=False,
-            message=message,
-            state_changed=False,
-            action="AUDIT_NOT_CONFIGURED",
-        )
 
     # Get local timezone
     local_tz = datetime.now().astimezone().tzinfo or timezone.utc
@@ -451,27 +344,26 @@ def handle_audit_command(cmd: TelegramCommand) -> CommandResult:
             action="AUDIT_INVALID_RANGE",
         )
 
-    # Create Backpack client
+    # Get audit provider for the specified exchange
     try:
-        from exchange.backpack import BackpackFuturesExchangeClient
-
-        base_url = os.getenv("BACKPACK_API_BASE_URL") or "https://api.backpack.exchange"
-        window_raw = os.getenv("BACKPACK_API_WINDOW_MS") or "5000"
-        try:
-            window_ms = int(window_raw)
-        except (TypeError, ValueError):
-            window_ms = 5000
-
-        client = BackpackFuturesExchangeClient(
-            api_public_key=api_public_key,
-            api_secret_seed=api_secret_seed,
-            base_url=base_url,
-            window_ms=window_ms,
+        provider = _get_audit_provider(exchange)
+    except ValueError as exc:
+        exchange_name = EXCHANGE_DISPLAY_NAMES.get(exchange, exchange)
+        message = (
+            f"❌ *{escape_markdown(exchange_name)} API 未配置*\n\n"
+            f"错误: `{escape_markdown(str(exc))}`"
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action="AUDIT_NOT_CONFIGURED",
         )
     except Exception as exc:
-        logging.error("Failed to create Backpack client for /audit: %s", exc)
+        logging.error("Failed to create audit provider for %s: %s", exchange, exc)
+        exchange_name = EXCHANGE_DISPLAY_NAMES.get(exchange, exchange)
         message = (
-            "❌ *Backpack 客户端初始化失败*\n\n"
+            f"❌ *{escape_markdown(exchange_name)} 客户端初始化失败*\n\n"
             f"错误: `{escape_markdown(str(exc))}`"
         )
         return CommandResult(
@@ -481,19 +373,20 @@ def handle_audit_command(cmd: TelegramCommand) -> CommandResult:
             action="AUDIT_CLIENT_ERROR",
         )
 
-    # Fetch and analyze data
+    # Fetch and format audit data
     try:
-        datasets = _fetch_audit_data(client)
-        message = _analyze_audit_data(
-            datasets,
+        audit_data = provider.fetch_audit_data(start_utc, end_utc)
+        message = format_audit_message(
+            audit_data,
             start_utc=start_utc,
             end_utc=end_utc,
             local_tz=local_tz,
         )
     except Exception as exc:
-        logging.error("Failed to fetch/analyze audit data: %s", exc)
+        logging.error("Failed to fetch/analyze audit data for %s: %s", exchange, exc)
+        exchange_name = EXCHANGE_DISPLAY_NAMES.get(exchange, exchange)
         message = (
-            "❌ *获取审计数据失败*\n\n"
+            f"❌ *获取 {escape_markdown(exchange_name)} 审计数据失败*\n\n"
             f"错误: `{escape_markdown(str(exc))}`"
         )
         return CommandResult(
@@ -504,8 +397,9 @@ def handle_audit_command(cmd: TelegramCommand) -> CommandResult:
         )
 
     logging.info(
-        "Telegram /audit completed | chat_id=%s | start=%s | end=%s",
+        "Telegram /audit completed | chat_id=%s | exchange=%s | start=%s | end=%s",
         cmd.chat_id,
+        exchange,
         start_utc.isoformat(),
         end_utc.isoformat(),
     )
