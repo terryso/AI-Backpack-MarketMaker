@@ -15,6 +15,18 @@
 
 ---
 
+## Backpack 刷量效果示例（实测）
+
+下图为在 Backpack USDC 永续合约上刷量约 7 天的实测效果：第四季度第二周获得518积分 累计成交额约 **40 万 USDC**，整体亏损约 **50 USDC**（主要来自手续费和点差，实际盈亏仍取决于市场波动和具体策略）。
+
+<p align="center">
+  <img src="https://i.v2ex.co/Vxe2eQv7.png" alt="Backpack 刷量效果示例" width="520" />
+</p>
+
+> 上图仅为历史示例，不代表任何未来收益承诺，请务必结合自身风险偏好谨慎使用。
+
+---
+
 ## 🏢 代部署服务
 
 **不想自己折腾部署、服务器、环境？可以找我代部署。**
@@ -161,16 +173,6 @@ LIVE_TRADING_ENABLED=true
   - `MARKET_DATA_BACKEND=backpack`：从 Backpack 公共行情 API 获取价格和 K 线，在纯 Backpack 场景下更统一
 
 > 你可以只先配置 Backpack + LLM，其他参数保持默认即可开始试跑。
-
-### Backpack 刷量效果示例（实测）
-
-下图为在 Backpack USDC 永续合约上刷量约 2 天的实测效果：累计成交额约 **20 万 USDC**，整体亏损约 **25 USDC**（主要来自手续费和点差，实际盈亏仍取决于市场波动和具体策略）。
-
-<p align="center">
-  <img src="https://i.v2ex.co/pt7yWp6ll.jpeg" alt="Backpack 刷量效果示例" width="520" />
-</p>
-
-> 上图仅为历史示例，不代表任何未来收益承诺，请务必结合自身风险偏好谨慎使用。
 
 ---
 

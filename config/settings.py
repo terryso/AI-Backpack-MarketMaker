@@ -394,17 +394,75 @@ LIVE_MAX_MARGIN_USD = _TRADING_CFG.live_max_margin_usd
 IS_LIVE_BACKEND = _TRADING_CFG.is_live_backend
 START_CAPITAL = _TRADING_CFG.start_capital
 
+def _parse_symbols_env(var_name: str = "TRADEBOT_SYMBOLS") -> Optional[List[str]]:
+    raw = os.getenv(var_name)
+    if not raw:
+        return None
+    parts = raw.split(",")
+    symbols: List[str] = []
+    seen = set()
+    for part in parts:
+        sym = part.strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        symbols.append(sym)
+    if not symbols:
+        return None
+    return symbols
+
+
+def _infer_coin_from_symbol_for_env(symbol: str) -> Optional[str]:
+    sym = str(symbol).strip().upper()
+    if not sym:
+        return None
+    if sym.endswith("USDT") and len(sym) > 4:
+        return sym[:-4]
+    if sym.endswith("USDC") and len(sym) > 4:
+        return sym[:-4]
+    if sym.endswith("USD") and len(sym) > 3:
+        return sym[:-3]
+    if "_" in sym:
+        return sym.split("_")[0]
+    return None
+
+
+def _build_symbol_universe_from_env(
+    default_symbols: List[str],
+    default_symbol_to_coin: Dict[str, str],
+) -> Tuple[List[str], Dict[str, str]]:
+    env_symbols = _parse_symbols_env()
+    if env_symbols is not None:
+        symbols = env_symbols
+    else:
+        symbols = list(default_symbols)
+
+    symbol_to_coin: Dict[str, str] = dict(default_symbol_to_coin)
+    for sym in symbols:
+        if sym in symbol_to_coin:
+            continue
+        coin = _infer_coin_from_symbol_for_env(sym)
+        if not coin:
+            continue
+        symbol_to_coin[sym] = coin
+    return symbols, symbol_to_coin
+
+
 # ───────────────────────── SYMBOLS ─────────────────────────
-SYMBOLS = [
+_DEFAULT_SYMBOLS = [
     "ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "BNBUSDT"
 ]
-SYMBOL_TO_COIN = {
+_DEFAULT_SYMBOL_TO_COIN = {
     "ETHUSDT": "ETH",
     "SOLUSDT": "SOL",
     "XRPUSDT": "XRP",
     "BTCUSDT": "BTC",
     "BNBUSDT": "BNB",
 }
+SYMBOLS, SYMBOL_TO_COIN = _build_symbol_universe_from_env(
+    default_symbols=_DEFAULT_SYMBOLS,
+    default_symbol_to_coin=_DEFAULT_SYMBOL_TO_COIN,
+)
 COIN_TO_SYMBOL = {coin: symbol for symbol, coin in SYMBOL_TO_COIN.items()}
 
 # ───────────────────────── SYSTEM PROMPT ─────────────────────────

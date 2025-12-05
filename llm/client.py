@@ -43,6 +43,7 @@ def _log_llm_decisions(decisions: Dict[str, Any]) -> None:
     """Log a compact, human-readable summary of LLM decisions for all coins."""
     try:
         parts: List[str] = []
+        summary_parts: List[str] = []
         for coin, raw_decision in decisions.items():
             if not isinstance(raw_decision, dict):
                 continue
@@ -54,6 +55,13 @@ def _log_llm_decisions(decisions: Dict[str, Any]) -> None:
             sl = decision.get("stop_loss")
             confidence = decision.get("confidence")
 
+            justification = decision.get("justification")
+            if justification:
+                reason_snippet = " ".join(str(justification).split())
+                if len(reason_snippet) > 200:
+                    reason_snippet = reason_snippet[:197] + "..."
+                summary_parts.append(f"{coin}: {reason_snippet}")
+
             if signal == "entry":
                 parts.append(
                     f"{coin}: ENTRY {side or '-'} qty={quantity} tp={tp} sl={sl} conf={confidence}"
@@ -62,6 +70,9 @@ def _log_llm_decisions(decisions: Dict[str, Any]) -> None:
                 parts.append(f"{coin}: CLOSE {side or '-'}")
             else:
                 parts.append(f"{coin}: HOLD")
+
+        if summary_parts:
+            logging.info("LLM decision summary:\n%s", "\n".join(summary_parts))
 
         if parts:
             logging.info("LLM decisions: %s", " | ".join(parts))
