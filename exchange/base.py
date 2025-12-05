@@ -47,6 +47,57 @@ class CloseResult:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class Position:
+    """标准化的持仓数据结构。
+    
+    各交易所客户端应将原始持仓数据转换为此格式，
+    使上层命令处理逻辑无需关心交易所差异。
+    """
+    coin: str                           # 币种名称 (如 "BTC", "ETH")
+    side: str                           # "long" 或 "short"
+    quantity: float                     # 持仓数量 (绝对值)
+    entry_price: float                  # 入场价格
+    mark_price: Optional[float] = None  # 标记价格
+    leverage: float = 1.0               # 杠杆倍数
+    margin: float = 0.0                 # 已用保证金
+    notional: float = 0.0               # 名义价值
+    unrealized_pnl: float = 0.0         # 未实现盈亏
+    realized_pnl: float = 0.0           # 已实现盈亏
+    liquidation_price: Optional[float] = None  # 强平价格
+    take_profit: Optional[float] = None # 止盈价格
+    stop_loss: Optional[float] = None   # 止损价格
+    raw: Optional[Dict[str, Any]] = None  # 原始数据 (调试用)
+
+
+@dataclass(slots=True)
+class AccountSnapshot:
+    """标准化的账户快照数据结构。
+    
+    各交易所客户端应将原始账户数据转换为此格式。
+    """
+    balance: float                      # 可用余额
+    total_equity: float                 # 总权益
+    total_margin: float                 # 已用保证金
+    positions: List[Position]           # 持仓列表
+    raw: Optional[Dict[str, Any]] = None  # 原始数据 (调试用)
+    
+    @property
+    def positions_count(self) -> int:
+        """持仓数量。"""
+        return len(self.positions)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式 (兼容旧接口)。"""
+        return {
+            "balance": self.balance,
+            "total_equity": self.total_equity,
+            "total_margin": self.total_margin,
+            "positions_count": self.positions_count,
+            "positions": self.positions,
+        }
+
+
 @runtime_checkable
 class ExchangeClient(Protocol):
     """统一的交易执行抽象接口（Exchange Execution Layer）。

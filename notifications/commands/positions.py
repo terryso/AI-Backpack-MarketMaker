@@ -16,129 +16,176 @@ from config.settings import IS_LIVE_BACKEND, LIVE_MAX_LEVERAGE
 from core.metrics import calculate_unrealized_pnl_for_position
 
 
-def parse_live_positions(raw_positions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def parse_live_positions(raw_positions: List[Any]) -> Dict[str, Dict[str, Any]]:
     """Parse live positions from exchange snapshot into standardized format.
     
-    This function converts raw position data from exchanges (e.g., Backpack Futures)
-    into the standardized format expected by handle_positions_command.
+    This function converts position data into the standardized dict format
+    expected by handle_positions_command.
+    
+    Supports two input formats:
+    1. List[Position] - standardized Position objects from exchange clients
+    2. List[Dict] - raw position dicts (legacy, for backward compatibility)
     
     Args:
-        raw_positions: List of raw position dicts from exchange API.
+        raw_positions: List of Position objects or raw position dicts.
         
     Returns:
-        Dict mapping coin symbol to position data with standardized keys:
-        - side: "long" or "short"
-        - quantity: Absolute position size
-        - entry_price: Entry price
-        - profit_target: Take profit price
-        - stop_loss: Stop loss price
-        - leverage: Position leverage
-        - margin: Margin used
-        - risk_usd: Risk in USD (0.0 if not available)
-        - pnl: Realized + unrealized PnL
-        - liquidation_price: Estimated liquidation price
+        Dict mapping coin symbol to position data with standardized keys.
     """
+    from exchange.base import Position
+    
     positions: Dict[str, Dict[str, Any]] = {}
     
     for pos in raw_positions:
+        # Handle standardized Position objects (new path)
+        if isinstance(pos, Position):
+            positions[pos.coin] = {
+                "side": pos.side,
+                "quantity": pos.quantity,
+                "entry_price": pos.entry_price,
+                "profit_target": pos.take_profit,
+                "stop_loss": pos.stop_loss,
+                "leverage": pos.leverage,
+                "margin": pos.margin,
+                "risk_usd": 0.0,
+                "pnl": pos.unrealized_pnl + pos.realized_pnl,
+                "liquidation_price": pos.liquidation_price,
+                "mark_price": pos.mark_price,
+                "notional": pos.notional,
+                "unrealized_pnl": pos.unrealized_pnl,
+            }
+            continue
+        
+        # Handle raw dict format (legacy path for backward compatibility)
         if not isinstance(pos, dict):
             continue
-
-        symbol = str(pos.get("symbol", "") or "").strip()
-        if not symbol:
-            continue
-
-        # 兼容 Backpack 符号（如 BTC_USDC_PERP），提取前缀作为 coin
-        upper_symbol = symbol.upper()
-        if "_" in upper_symbol:
-            coin = upper_symbol.split("_", 1)[0]
-        else:
-            coin = upper_symbol
-
-        # 尝试从多种字段推导净持仓数量
-        net_qty = 0.0
-        for qty_field in ("netQuantity", "netExposureQuantity", "quantity", "size"):
-            raw_val = pos.get(qty_field)
-            if raw_val is None:
-                continue
-            try:
-                net_qty = float(raw_val)
-            except (TypeError, ValueError):
-                continue
-            if net_qty != 0.0:
-                break
-
-        if net_qty == 0.0:
-            continue
-
-        side = "long" if net_qty > 0 else "short"
-        quantity = abs(net_qty)
-
-        # 入场价 / TP / SL
-        entry_price = _safe_float(pos.get("entryPrice"))
-        tp = _safe_float(pos.get("takeProfitPrice"))
-        sl = _safe_float(pos.get("stopLossPrice"))
-
-        # notional
-        notional = abs(_safe_float(pos.get("netExposureNotional")))
-        if notional == 0.0 and entry_price > 0.0 and quantity > 0.0:
-            notional = abs(quantity * entry_price)
-
-        # imf: 初始保证金系数（代表该合约支持的最大杠杆的倒数，而不是实际杠杆）
-        imf = _safe_float(pos.get("imf"))
-
-        # 先尝试使用交易所返回的实际杠杆
-        leverage = _safe_float(pos.get("leverage"))
-
-        # 保证金
-        margin = 0.0
-        for margin_field in ("initialMargin", "marginUsed", "margin"):
-            margin = _safe_float(pos.get(margin_field))
-            if margin > 0.0:
-                break
-
-        # 如果没有显式保证金，但有 notional 和杠杆，则用 notional / leverage 推导
-        if margin <= 0.0 and notional > 0.0 and leverage > 0.0:
-            margin = abs(notional) / leverage
-
-        # 若仍然没有保证金，在实盘后端下优先使用 LIVE_MAX_LEVERAGE 反推
-        if margin <= 0.0 and notional > 0.0:
-            if IS_LIVE_BACKEND and LIVE_MAX_LEVERAGE > 0.0:
-                margin = abs(notional) / LIVE_MAX_LEVERAGE
-            elif imf > 0.0:
-                # 仅在无更好信息时，将 imf 作为兜底近似
-                margin = abs(notional) * imf
-
-        # 最终确定杠杆：若未能从交易所拿到，则用 notional / margin 反推
-        if leverage <= 0.0 and margin > 0.0 and notional > 0.0:
-            leverage = abs(notional) / margin
-        if leverage <= 0.0 and imf > 0.0:
-            leverage = 1.0 / imf
-        if leverage <= 0.0:
-            leverage = 1.0
-
-        # 盈亏
-        realized = _safe_float(pos.get("pnlRealized"))
-        unrealized = _safe_float(pos.get("pnlUnrealized"))
-        pnl = realized + unrealized
-
-        # 强平价
-        liq_price = _safe_float(pos.get("estLiquidationPrice"))
-
-        positions[coin] = {
-            "side": side,
-            "quantity": quantity,
-            "entry_price": entry_price,
-            "profit_target": tp,
-            "stop_loss": sl,
-            "leverage": leverage,
-            "margin": margin,
-            "risk_usd": 0.0,
-            "pnl": pnl,
-            "liquidation_price": liq_price,
-        }
+        
+        parsed = _parse_raw_position_dict(pos)
+        if parsed:
+            coin, data = parsed
+            positions[coin] = data
 
     return positions
+
+
+def _parse_raw_position_dict(pos: Dict[str, Any]) -> Optional[tuple]:
+    """Parse a raw position dict into (coin, data) tuple.
+    
+    This is the legacy parsing logic for raw exchange responses.
+    New code should use standardized Position objects from exchange clients.
+    """
+    symbol = str(pos.get("symbol", "") or "").strip()
+    if not symbol:
+        return None
+
+    # Extract coin name from various symbol formats
+    coin = _parse_coin_from_symbol(symbol)
+
+    # Get quantity
+    net_qty = 0.0
+    for qty_field in ("netQuantity", "netExposureQuantity", "contracts", "positionAmt", "quantity", "size"):
+        raw_val = pos.get(qty_field)
+        if raw_val is None:
+            continue
+        try:
+            net_qty = float(raw_val)
+        except (TypeError, ValueError):
+            continue
+        if net_qty != 0.0:
+            break
+
+    if net_qty == 0.0:
+        return None
+
+    # Determine side
+    position_side = str(pos.get("positionSide", "") or pos.get("side", "")).upper()
+    if position_side in ("LONG", "SHORT"):
+        side = position_side.lower()
+    else:
+        side = "long" if net_qty > 0 else "short"
+    quantity = abs(net_qty)
+
+    # Entry price / TP / SL
+    entry_price = _safe_float(pos.get("entryPrice"))
+    tp = _safe_float(pos.get("takeProfitPrice"))
+    sl = _safe_float(pos.get("stopLossPrice"))
+
+    # Notional
+    notional = abs(_safe_float(pos.get("netExposureNotional")))
+    if notional == 0.0:
+        notional = abs(_safe_float(pos.get("notional")))
+    if notional == 0.0 and entry_price > 0.0:
+        notional = quantity * entry_price
+
+    # Leverage
+    leverage = _safe_float(pos.get("leverage"))
+    imf = _safe_float(pos.get("imf"))
+
+    # Margin
+    margin = 0.0
+    for margin_field in ("initialMargin", "marginUsed", "margin"):
+        margin = _safe_float(pos.get(margin_field))
+        if margin > 0.0:
+            break
+
+    if margin <= 0.0 and notional > 0.0 and leverage > 0.0:
+        margin = notional / leverage
+    if margin <= 0.0 and notional > 0.0:
+        if IS_LIVE_BACKEND and LIVE_MAX_LEVERAGE > 0.0:
+            margin = notional / LIVE_MAX_LEVERAGE
+        elif imf > 0.0:
+            margin = notional * imf
+
+    if leverage <= 0.0 and margin > 0.0 and notional > 0.0:
+        leverage = notional / margin
+    if leverage <= 0.0 and imf > 0.0:
+        leverage = 1.0 / imf
+    if leverage <= 0.0:
+        leverage = 1.0
+
+    # PnL
+    realized = _safe_float(pos.get("pnlRealized"))
+    unrealized = _safe_float(pos.get("pnlUnrealized"))
+    if unrealized == 0.0:
+        unrealized = _safe_float(pos.get("unrealizedProfit"))
+    if unrealized == 0.0:
+        unrealized = _safe_float(pos.get("unRealizedProfit"))
+    if unrealized == 0.0:
+        unrealized = _safe_float(pos.get("unrealizedPnl"))
+
+    # Liquidation price
+    liq_price = _safe_float(pos.get("estLiquidationPrice"))
+    if liq_price == 0.0:
+        liq_price = _safe_float(pos.get("liquidationPrice"))
+
+    return coin, {
+        "side": side,
+        "quantity": quantity,
+        "entry_price": entry_price,
+        "profit_target": tp,
+        "stop_loss": sl,
+        "leverage": leverage,
+        "margin": margin,
+        "risk_usd": 0.0,
+        "pnl": realized + unrealized,
+        "liquidation_price": liq_price,
+    }
+
+
+def _parse_coin_from_symbol(symbol: str) -> str:
+    """Extract coin name from various symbol formats."""
+    upper = symbol.upper()
+    if "/" in upper:
+        return upper.split("/", 1)[0]
+    if "_" in upper:
+        return upper.split("_", 1)[0]
+    if upper.endswith("USDT"):
+        return upper[:-4]
+    if upper.endswith("USDC"):
+        return upper[:-4]
+    if upper.endswith("USD"):
+        return upper[:-3]
+    return upper
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

@@ -7,7 +7,37 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from exchange.base import EntryResult, CloseResult
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Safely convert a value to float."""
+    if value is None:
+        return default
+    try:
+        result = float(value)
+        return default if result != result else result  # NaN check
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_coin_from_symbol(symbol: str) -> str:
+    """Extract coin name from various symbol formats.
+    
+    Supports:
+    - ccxt format: BTC/USDT:USDT -> BTC
+    - Binance raw: BTCUSDT -> BTC
+    """
+    upper = symbol.upper()
+    if "/" in upper:
+        return upper.split("/", 1)[0]
+    if upper.endswith("USDT"):
+        return upper[:-4]
+    if upper.endswith("USDC"):
+        return upper[:-4]
+    if upper.endswith("USD"):
+        return upper[:-3]
+    return upper
 
 
 class BinanceFuturesExchangeClient:
@@ -15,6 +45,128 @@ class BinanceFuturesExchangeClient:
     
     def __init__(self, exchange: Any) -> None:
         self._exchange = exchange
+
+    def get_account_snapshot(self) -> Optional[AccountSnapshot]:
+        """Get account snapshot including balance and positions.
+        
+        Returns:
+            AccountSnapshot with standardized data format.
+        """
+        try:
+            # Fetch balance info
+            balance_info = self._exchange.fetch_balance()
+            
+            # Extract USDT balance (main margin currency for USDM futures)
+            usdt_info = balance_info.get("USDT", {})
+            free_balance = _safe_float(usdt_info.get("free"))
+            total_balance = _safe_float(usdt_info.get("total"))
+            
+            # Get total equity from info if available
+            info = balance_info.get("info", {})
+            total_equity = 0.0
+            total_margin = 0.0
+            
+            if isinstance(info, dict):
+                total_equity = _safe_float(info.get("totalWalletBalance"))
+                total_margin = _safe_float(info.get("totalPositionInitialMargin"))
+            
+            if total_equity == 0:
+                total_equity = total_balance
+            
+            # Fetch and parse positions
+            positions_raw = self._exchange.fetch_positions()
+            positions = self._parse_positions(positions_raw)
+            
+            return AccountSnapshot(
+                balance=free_balance,
+                total_equity=total_equity,
+                total_margin=total_margin,
+                positions=positions,
+                raw={"balance_info": info, "positions_raw": positions_raw},
+            )
+        except Exception as e:
+            logging.warning("Failed to get Binance account snapshot: %s", e)
+            return None
+
+    def _parse_positions(self, positions_raw: List[Dict[str, Any]]) -> List[Position]:
+        """Parse raw positions into standardized Position objects."""
+        positions: List[Position] = []
+        
+        for pos in positions_raw:
+            if not isinstance(pos, dict):
+                continue
+            
+            # Get quantity - skip if zero
+            contracts = _safe_float(pos.get("contracts"))
+            if contracts == 0:
+                continue
+            
+            # Parse symbol to coin name
+            symbol = str(pos.get("symbol", "") or "")
+            coin = _parse_coin_from_symbol(symbol)
+            
+            # Determine side from positionSide (hedge mode) or contracts sign
+            position_side = str(pos.get("side", "") or "").upper()
+            if position_side in ("LONG", "SHORT"):
+                side = position_side.lower()
+            else:
+                side = "long" if contracts > 0 else "short"
+            
+            quantity = abs(contracts)
+            entry_price = _safe_float(pos.get("entryPrice"))
+            mark_price = _safe_float(pos.get("markPrice"))
+            
+            # Notional and margin
+            notional = _safe_float(pos.get("notional"))
+            if notional == 0 and entry_price > 0:
+                notional = quantity * entry_price
+            notional = abs(notional)
+            
+            margin = _safe_float(pos.get("initialMargin"))
+            if margin == 0:
+                margin = _safe_float(pos.get("collateral"))
+            
+            # Leverage
+            leverage = _safe_float(pos.get("leverage"))
+            if leverage == 0 and margin > 0 and notional > 0:
+                leverage = notional / margin
+            if leverage == 0:
+                leverage = 1.0
+            
+            # PnL
+            unrealized_pnl = _safe_float(pos.get("unrealizedPnl"))
+            if unrealized_pnl == 0:
+                unrealized_pnl = _safe_float(pos.get("unrealizedProfit"))
+            
+            # Liquidation price
+            liq_price = _safe_float(pos.get("liquidationPrice"))
+            liq_price = liq_price if liq_price > 0 else None
+            
+            positions.append(Position(
+                coin=coin,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                mark_price=mark_price if mark_price > 0 else None,
+                leverage=leverage,
+                margin=margin,
+                notional=notional,
+                unrealized_pnl=unrealized_pnl,
+                liquidation_price=liq_price,
+                raw=pos,
+            ))
+        
+        return positions
+
+    def get_current_price(self, coin: str) -> Optional[float]:
+        """Get current price for a coin."""
+        symbol = f"{coin}USDT"
+        try:
+            ticker = self._exchange.fetch_ticker(symbol)
+            return _safe_float(ticker.get("last"))
+        except Exception as e:
+            logging.warning("Failed to get price for %s: %s", symbol, e)
+            return None
 
     @staticmethod
     def _deduplicate_errors(errors: List[str]) -> List[str]:

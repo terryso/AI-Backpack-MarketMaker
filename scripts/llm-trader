@@ -1,0 +1,13 @@
+#!/bin/bash
+# LLM Trader CLI wrapper script
+# 
+# Usage:
+#   ./scripts/llm-trader <command> [args...]
+#
+# Or add to PATH and use directly:
+#   llm-trader <command> [args...]
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+cd "$PROJECT_DIR" && python llm_trader.py "$@"

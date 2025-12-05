@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from exchange.base import EntryResult, CloseResult
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot
 
 
 class BackpackFuturesExchangeClient:
@@ -366,45 +366,132 @@ class BackpackFuturesExchangeClient:
     # ACCOUNT SNAPSHOT (for /balance command)
     # ═══════════════════════════════════════════════════════════════════
 
-    def get_account_snapshot(self) -> Optional[Dict[str, Any]]:
+    def get_account_snapshot(self) -> Optional[AccountSnapshot]:
         """Retrieve live account snapshot from Backpack API.
 
         This method calls the collateralQuery and positionQuery endpoints to
-        build a unified account snapshot for the /balance Telegram command.
+        build a unified account snapshot.
 
         Returns:
-            Dictionary with keys:
-            - balance: Available balance (netEquityAvailable from collateral)
-            - total_equity: Total account equity (netEquity from collateral)
-            - total_margin: Locked equity / margin in use (netEquityLocked)
-            - positions_count: Number of open futures positions
-            - unrealized_pnl: Unrealized PnL from collateral
-            Returns None if API call fails.
+            AccountSnapshot with standardized data format, or None if API call fails.
         """
         collateral = self._get_collateral()
         if collateral is None:
             return None
 
-        positions = self._get_open_positions()
-        positions_count = len(positions) if positions is not None else 0
+        positions_raw = self._get_open_positions()
 
         try:
             net_equity = float(collateral.get("netEquity", 0) or 0)
             net_equity_available = float(collateral.get("netEquityAvailable", 0) or 0)
             net_equity_locked = float(collateral.get("netEquityLocked", 0) or 0)
-            unrealized_pnl = float(collateral.get("pnlUnrealized", 0) or 0)
         except (TypeError, ValueError) as exc:
             logging.warning("Failed to parse Backpack collateral values: %s", exc)
             return None
 
-        return {
-            "balance": net_equity_available,
-            "total_equity": net_equity,
-            "total_margin": net_equity_locked,
-            "positions_count": positions_count,
-            "unrealized_pnl": unrealized_pnl,
-            "positions": positions or [],
-        }
+        positions = self._parse_positions(positions_raw or [])
+
+        return AccountSnapshot(
+            balance=net_equity_available,
+            total_equity=net_equity,
+            total_margin=net_equity_locked,
+            positions=positions,
+            raw={"collateral": collateral, "positions_raw": positions_raw},
+        )
+
+    def _parse_positions(self, positions_raw: List[Dict[str, Any]]) -> List[Position]:
+        """Parse raw Backpack positions into standardized Position objects."""
+        positions: List[Position] = []
+        
+        for pos in positions_raw:
+            if not isinstance(pos, dict):
+                continue
+            
+            # Get quantity
+            net_qty = 0.0
+            for qty_field in ("netQuantity", "netExposureQuantity", "quantity", "size"):
+                raw_val = pos.get(qty_field)
+                if raw_val is not None:
+                    try:
+                        net_qty = float(raw_val)
+                        if net_qty != 0:
+                            break
+                    except (TypeError, ValueError):
+                        continue
+            
+            if net_qty == 0:
+                continue
+            
+            # Parse symbol: BTC_USDC_PERP -> BTC
+            symbol = str(pos.get("symbol", "") or "")
+            coin = symbol.split("_", 1)[0].upper() if "_" in symbol else symbol.upper()
+            
+            # Side and quantity
+            side = "long" if net_qty > 0 else "short"
+            quantity = abs(net_qty)
+            
+            # Entry price
+            entry_price = self._safe_float(pos.get("entryPrice"))
+            
+            # Notional
+            notional = abs(self._safe_float(pos.get("netExposureNotional")))
+            if notional == 0 and entry_price > 0:
+                notional = quantity * entry_price
+            
+            # Margin
+            margin = self._safe_float(pos.get("initialMargin"))
+            if margin == 0:
+                margin = self._safe_float(pos.get("marginUsed"))
+            
+            # Leverage
+            leverage = self._safe_float(pos.get("leverage"))
+            imf = self._safe_float(pos.get("imf"))
+            if leverage == 0 and margin > 0 and notional > 0:
+                leverage = notional / margin
+            if leverage == 0 and imf > 0:
+                leverage = 1.0 / imf
+            if leverage == 0:
+                leverage = 1.0
+            
+            # PnL
+            unrealized_pnl = self._safe_float(pos.get("pnlUnrealized"))
+            realized_pnl = self._safe_float(pos.get("pnlRealized"))
+            
+            # Liquidation price
+            liq_price = self._safe_float(pos.get("estLiquidationPrice"))
+            
+            # TP/SL
+            take_profit = self._safe_float(pos.get("takeProfitPrice"))
+            stop_loss = self._safe_float(pos.get("stopLossPrice"))
+            
+            positions.append(Position(
+                coin=coin,
+                side=side,
+                quantity=quantity,
+                entry_price=entry_price,
+                leverage=leverage,
+                margin=margin,
+                notional=notional,
+                unrealized_pnl=unrealized_pnl,
+                realized_pnl=realized_pnl,
+                liquidation_price=liq_price if liq_price > 0 else None,
+                take_profit=take_profit if take_profit > 0 else None,
+                stop_loss=stop_loss if stop_loss > 0 else None,
+                raw=pos,
+            ))
+        
+        return positions
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Safely convert a value to float."""
+        if value is None:
+            return default
+        try:
+            result = float(value)
+            return default if result != result else result  # NaN check
+        except (TypeError, ValueError):
+            return default
 
     def _get_collateral(self) -> Optional[Dict[str, Any]]:
         """Fetch collateral information from Backpack API.
