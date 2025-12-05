@@ -203,7 +203,7 @@ _INTERVAL_TO_SECONDS = {
 # ───────────────────────── EXECUTION ─────────────────────────
 from execution.executor import TradeExecutor
 from execution.routing import check_stop_loss_take_profit_for_positions, route_live_close
-from exchange.base import CloseResult
+from exchange.base import CloseResult, AccountSnapshot
 
 # ───────────────────────── DISPLAY ─────────────────────────
 from display.portfolio import (
@@ -380,10 +380,26 @@ def _get_backpack_futures_snapshot() -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        return client.get_account_snapshot()
+        snapshot = client.get_account_snapshot()
     except Exception as exc:
         logging.warning("Failed to get Backpack account snapshot: %s", exc)
         return None
+
+    if snapshot is None:
+        return None
+
+    # Convert standardized AccountSnapshot to dict for notification/Telegram layer
+    if isinstance(snapshot, AccountSnapshot):
+        return snapshot.to_dict()
+
+    if isinstance(snapshot, dict):
+        return snapshot
+
+    logging.warning(
+        "Backpack account snapshot returned unexpected type: %r",
+        type(snapshot),
+    )
+    return None
 
 
 def get_telegram_command_handler() -> Optional[TelegramCommandHandler]:
